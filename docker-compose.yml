@@ -1,0 +1,19 @@
+version: "3.9"
+
+services:
+  phase4:
+    build: .
+    image: phase4-peppol:latest
+    container_name: phase4-peppol
+    ports:
+      - "8080:8080"       # AS4 endpoint: http://localhost:8080/as4
+                          # REST API:     http://localhost:8080/api/
+    volumes:
+      # Mount your certificate file (place it in ./certs/ folder)
+      - ./certs:/certs:ro
+      # Persistent data storage (incoming messages, dumps, etc.)
+      - ./data:/data/as4
+    environment:
+      # Optional: override Java memory settings
+      CATALINA_OPTS: "-Xms256m -Xmx512m"
+    restart: unless-stopped
