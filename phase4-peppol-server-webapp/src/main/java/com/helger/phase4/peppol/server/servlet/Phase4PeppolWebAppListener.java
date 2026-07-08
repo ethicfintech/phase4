@@ -215,6 +215,11 @@ public final class Phase4PeppolWebAppListener extends WebAppListener
     // (this is the default setting, but added it here for easy modification)
     Phase4PeppolDefaultReceiverConfiguration.setCheckSigningCertificateRevocation (true);
 
+    // Disable SBDH value checks: the PEPPOL testbed addresses messages using
+    // scheme 0242 (PEPPOL Seat ID) which is not in the CEF EAS codelist,
+    // causing a spurious BR-CL-25 validation failure on incoming messages.
+    Phase4PeppolDefaultReceiverConfiguration.setPerformSBDHValueChecks (false);
+
     // Make sure the download of CRL is using Apache HttpClient and that the
     // provided settings are used.
     final Phase4PeppolCRLHttpClientSettings aHCS = new Phase4PeppolCRLHttpClientSettings ();
@@ -356,6 +361,11 @@ public final class Phase4PeppolWebAppListener extends WebAppListener
       Phase4PeppolDefaultReceiverConfiguration.setReceiverCheckEnabled (false);
       LOGGER.warn (CAS4.LIB_NAME + " Peppol receiver checks are disabled");
     }
+
+    // Disable SMP receiver check: no SMP registration exists yet, so SMP
+    // lookups for incoming receiver IDs will always fail with NOT_SERVICED.
+    // TODO: re-enable once SMP is set up and participant is registered.
+    Phase4PeppolDefaultReceiverConfiguration.setReceiverCheckEnabled (false);
 
     // Initialize the Reporting Backend only once
     final IPeppolReportingBackendSPI aPRBS = PeppolReportingBackend.getBackendService ();
