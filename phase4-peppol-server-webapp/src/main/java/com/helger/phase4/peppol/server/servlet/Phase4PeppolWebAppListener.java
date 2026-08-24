@@ -180,32 +180,35 @@ public final class Phase4PeppolWebAppListener extends WebAppListener
     // Start duplicate check
     AS4ServerInitializer.initAS4Server ();
 
-    // Store the incoming file as is
-    AS4DumpManager.setIncomingDumper (new AS4IncomingDumperFileBased ( (aMessageMetadata,
-                                                                        aHttpHeaderMap) -> StorageHelper.getStorageFile (aMessageMetadata,
-                                                                                                                         ".as4in"))
+    // Store the incoming/outgoing files only when dump is enabled (disabled by default to avoid filling disk)
+    if (APConfig.isIncomingDumpEnabled ())
     {
-      @Override
-      public void onEndRequest (@NonNull final IAS4IncomingMessageMetadata aMessageMetadata,
-                                @Nullable final Exception aCaughtException)
+      AS4DumpManager.setIncomingDumper (new AS4IncomingDumperFileBased ( (aMessageMetadata,
+                                                                          aHttpHeaderMap) -> StorageHelper.getStorageFile (aMessageMetadata,
+                                                                                                                           ".as4in"))
       {
-        // Save the metadata also to a file
-        final File aFile = StorageHelper.getStorageFile (aMessageMetadata, ".metadata");
-        if (SimpleFileIO.writeFile (aFile,
-                                    AS4IncomingHelper.getIncomingMetadataAsJson (aMessageMetadata)
-                                                     .getAsJsonString (JsonWriterSettings.DEFAULT_SETTINGS_FORMATTED),
-                                    StandardCharsets.UTF_8).isFailure ())
-          LOGGER.error ("Failed to write metadata to '" + aFile.getAbsolutePath () + "'");
-        else
-          LOGGER.info ("Wrote metadata to '" + aFile.getAbsolutePath () + "'");
-      }
-    });
+        @Override
+        public void onEndRequest (@NonNull final IAS4IncomingMessageMetadata aMessageMetadata,
+                                  @Nullable final Exception aCaughtException)
+        {
+          // Save the metadata also to a file
+          final File aFile = StorageHelper.getStorageFile (aMessageMetadata, ".metadata");
+          if (SimpleFileIO.writeFile (aFile,
+                                      AS4IncomingHelper.getIncomingMetadataAsJson (aMessageMetadata)
+                                                       .getAsJsonString (JsonWriterSettings.DEFAULT_SETTINGS_FORMATTED),
+                                      StandardCharsets.UTF_8).isFailure ())
+            LOGGER.error ("Failed to write metadata to '" + aFile.getAbsolutePath () + "'");
+          else
+            LOGGER.info ("Wrote metadata to '" + aFile.getAbsolutePath () + "'");
+        }
+      });
 
-    // Store the outgoings file as well
-    AS4DumpManager.setOutgoingDumper (new AS4OutgoingDumperFileBased ( (eMsgMode, sMessageID, nTry) -> StorageHelper
-                                                                                                                    .getStorageFile (sMessageID,
-                                                                                                                                     nTry,
-                                                                                                                                     ".as4out")));
+      // Store the outgoings file as well
+      AS4DumpManager.setOutgoingDumper (new AS4OutgoingDumperFileBased ( (eMsgMode, sMessageID, nTry) -> StorageHelper
+                                                                                                                      .getStorageFile (sMessageID,
+                                                                                                                                       nTry,
+                                                                                                                                       ".as4out")));
+    }
   }
 
   private static void _initPeppolAS4 ()
