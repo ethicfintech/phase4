@@ -17,10 +17,14 @@
 package com.helger.phase4.peppol.server.api;
 
 import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 
 import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 import com.helger.annotation.Nonempty;
 import com.helger.base.array.ArrayHelper;
@@ -28,6 +32,7 @@ import com.helger.base.io.nonblocking.NonBlockingByteArrayInputStream;
 import com.helger.base.io.stream.StreamHelper;
 import com.helger.mime.CMimeType;
 import com.helger.peppol.sbdh.PeppolSBDHData;
+import com.helger.xml.serialize.read.DOMReader;
 import com.helger.peppol.sbdh.PeppolSBDHDataReadException;
 import com.helger.peppol.sbdh.PeppolSBDHDataReader;
 import com.helger.peppol.security.PeppolTrustedCA;
@@ -103,6 +108,7 @@ public final class APIPostSendSBDH extends AbstractVerifyingAPIExecutor
     final String sSenderID = aData.getSenderURIEncoded ();
     final String sReceiverID = aData.getReceiverURIEncoded ();
     final String sDocTypeID = aData.getDocumentTypeURIEncoded ();
+    final String sDocTypeIDValue = aData.getDocumentTypeAsIdentifier () != null ? aData.getDocumentTypeAsIdentifier ().getValue () : null;
     final String sProcessID = aData.getProcessURIEncoded ();
     final String sCountryCodeC1 = aData.getCountryC1 ();
 
@@ -112,11 +118,47 @@ public final class APIPostSendSBDH extends AbstractVerifyingAPIExecutor
                  sReceiverID +
                  "' using '" +
                  sDocTypeID +
-                 "' and '" +
+                 "' (raw: '" +
+                 sDocTypeIDValue +
+                 "') and '" +
                  sProcessID +
                  "' for '" +
                  sCountryCodeC1 +
                  "'");
+
+    // Pre-send PINT-AE validation — extract UBL element from SBD and validate
+    if (sDocTypeIDValue != null && sDocTypeIDValue.contains ("@ae-1"))
+    {
+      LOGGER.info ("Running pre-send PINT-AE validation for doctype: " + sDocTypeIDValue);
+      Element aUBLElement = null;
+      final Document aSBDDoc = DOMReader.readXMLDOM (aPayloadBytes);
+      if (aSBDDoc != null)
+        for (Node aChild = aSBDDoc.getDocumentElement ().getFirstChild (); aChild != null; aChild = aChild.getNextSibling ())
+          if (aChild.getNodeType () == Node.ELEMENT_NODE &&
+              !"StandardBusinessDocumentHeader".equals (aChild.getLocalName ()))
+          {
+            aUBLElement = (Element) aChild;
+            break;
+          }
+
+      if (aUBLElement != null)
+      {
+        final List <String> aValidationErrors = PeppolSender._validatePintAE (aUBLElement, sDocTypeIDValue);
+        if (!aValidationErrors.isEmpty ())
+        {
+          LOGGER.warn ("Pre-send PINT-AE validation failed with " +
+                       aValidationErrors.size () +
+                       " error(s) - not sending SBD: " +
+                       String.join ("; ", aValidationErrors));
+          aSendingReport.setSendingSuccess (false);
+          aSendingReport.setOverallSuccess (false);
+          aUnifiedResponse.setContentAndCharset (aSendingReport.getAsJsonString (), StandardCharsets.UTF_8)
+                          .setMimeType (CMimeType.APPLICATION_JSON)
+                          .disableCaching ();
+          return;
+        }
+      }
+    }
 
     PeppolSender.sendPeppolMessagePredefinedSbdh (aData, eSML, aAPCA, aSendingReport);
 

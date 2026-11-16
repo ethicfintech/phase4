@@ -17,7 +17,12 @@
 package com.helger.phase4.peppol.server.spi;
 
 import java.io.File;
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
 import java.time.LocalDate;
 import java.time.OffsetTime;
 import java.time.ZoneOffset;
@@ -47,6 +52,7 @@ import com.helger.io.file.SimpleFileIO;
 import com.helger.peppol.reporting.api.PeppolReportingItem;
 import com.helger.peppol.reporting.api.backend.PeppolReportingBackend;
 import com.helger.peppol.reporting.api.backend.PeppolReportingBackendException;
+import com.helger.peppol.sbdh.EPeppolMLSType;
 import com.helger.peppol.sbdh.PeppolSBDHData;
 import com.helger.peppol.security.PeppolTrustedCA;
 import com.helger.peppol.servicedomain.EPeppolNetwork;
@@ -55,6 +61,7 @@ import com.helger.peppolid.IParticipantIdentifier;
 import com.helger.peppolid.IProcessIdentifier;
 import com.helger.peppolid.factory.PeppolIdentifierFactory;
 import com.helger.peppolid.peppol.pidscheme.EPredefinedParticipantIdentifierScheme;
+import com.helger.peppolid.simple.participant.SimpleParticipantIdentifier;
 import com.helger.phase4.CAS4;
 import com.helger.phase4.config.AS4Configuration;
 import com.helger.phase4.ebms3header.Ebms3Property;
@@ -79,17 +86,29 @@ import com.helger.security.certificate.TrustedCAChecker;
 import com.helger.diagnostics.error.IError;
 import com.helger.diagnostics.error.level.EErrorLevel;
 import com.helger.diver.api.coord.DVRCoordinate;
+import com.helger.phive.api.EValidationBaseType;
 import com.helger.phive.api.execute.ValidationExecutionManager;
 import com.helger.phive.api.executorset.IValidationExecutorSet;
 import com.helger.phive.api.executorset.ValidationExecutorSetRegistry;
 import com.helger.phive.api.result.ValidationResult;
 import com.helger.phive.api.result.ValidationResultList;
 import com.helger.phive.api.validity.IValidityDeterminator;
+import com.helger.peppol.uae.tdd.PeppolUAETDD10Builder;
+import com.helger.peppol.uae.tdd.PeppolUAETDD10ReportedTransactionBuilder;
+import com.helger.peppol.uae.tdd.codelist.EUAETDDDocumentScope;
+import com.helger.peppol.uae.tdd.codelist.EUAETDDDocumentTypeCode;
+import com.helger.peppol.uae.tdd.codelist.EUAETDDReporterRole;
+import com.helger.peppol.uae.tdd.jaxb.PeppolUAETDD10Marshaller;
+import com.helger.peppol.uae.tdd.v100.TaxDataType;
 import com.helger.phive.peppol.PeppolValidationPintAE;
 import com.helger.phive.xml.source.IValidationSourceXML;
 import com.helger.phive.xml.source.ValidationSourceXML;
 import com.helger.smpclient.peppol.SMPClientReadOnly;
+import com.helger.ubl21.UBL21Marshaller;
 import com.helger.xml.serialize.read.DOMReader;
+import com.helger.xml.serialize.write.XMLWriter;
+import oasis.names.specification.ubl.schema.xsd.creditnote_21.CreditNoteType;
+import oasis.names.specification.ubl.schema.xsd.invoice_21.InvoiceType;
 
 /**
  * Logging implementation of {@link IPhase4PeppolIncomingSBDHandlerSPI}.
@@ -110,43 +129,111 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     return aRegistry;
   }
 
+  // Returns list of {issueType ("SV" or "BV"), errorText} pairs
   @NonNull
-  private static List <String> _getValidationErrors (@NonNull final Element aUBLElement,
-                                                      @NonNull final String sDocTypeURI)
+  private static List <String []> _getValidationErrors (@NonNull final Element aUBLElement,
+                                                         @NonNull final String sDocTypeURI)
   {
     // Only validate AE PINT documents
     if (!sDocTypeURI.contains ("@ae-1"))
-      return Collections.emptyList ();
+      return Collections.<String []> emptyList ();
 
+    final boolean bIsSelfBilling = sDocTypeURI.contains ("selfbilling");
     final String sLocalName = aUBLElement.getLocalName ();
     final DVRCoordinate aVESID;
     if ("Invoice".equals (sLocalName))
-      aVESID = PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_INVOICE_2026_05;
+      aVESID = bIsSelfBilling ? PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_SB_INVOICE_2026_05
+                              : PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_INVOICE_2026_05;
     else
       if ("CreditNote".equals (sLocalName))
-        aVESID = PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_CREDIT_NOTE_2026_05;
+        aVESID = bIsSelfBilling ? PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_SB_CREDIT_NOTE_2026_05
+                                : PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_CREDIT_NOTE_2026_05;
       else
-        return Collections.emptyList ();
+        return Collections.<String []> emptyList ();
 
     final IValidationExecutorSet <IValidationSourceXML> aVES = VES_REGISTRY.getOfID (aVESID);
     if (aVES == null)
     {
       LOGGER.warn ("VES not found in registry for VESID: " + aVESID.getAsSingleID ());
-      return Collections.emptyList ();
+      return Collections.<String []> emptyList ();
     }
 
-    final IValidationSourceXML aSource = ValidationSourceXML.create (null, aUBLElement);
+    // Re-serialize the element to ensure namespace declarations are on the root
+    final byte [] aUBLBytes = XMLWriter.getNodeAsBytes (aUBLElement);
+    if (aUBLBytes == null)
+    {
+      LOGGER.warn ("Failed to serialize UBL element for validation");
+      return Collections.<String []> emptyList ();
+    }
+    final Document aUBLDoc = DOMReader.readXMLDOM (aUBLBytes);
+    if (aUBLDoc == null)
+    {
+      LOGGER.warn ("Failed to re-parse serialized UBL element");
+      return Collections.<String []> emptyList ();
+    }
+
+    final IValidationSourceXML aSource = ValidationSourceXML.create (null, aUBLDoc);
     final ValidationResultList aResultList = ValidationExecutionManager.executeValidation (IValidityDeterminator.createDefault (),
                                                                                            aVES,
                                                                                            aSource,
                                                                                            Locale.US);
 
-    final List <String> aErrors = new ArrayList <> ();
+    final List <String []> aIssues = new ArrayList <> ();
     for (final ValidationResult aResult : aResultList)
+    {
+      final EValidationBaseType eBaseType = aResult.getValidationArtefact ()
+                                                    .getValidationType ()
+                                                    .getBaseType ();
+      final String sIssueType = eBaseType.isXSD () ? "SV" : "BV";
       for (final IError aError : aResult.getErrorList ())
         if (aError.getErrorLevel ().isGE (EErrorLevel.ERROR))
-          aErrors.add (aError.getErrorText (Locale.US));
-    return aErrors;
+          aIssues.add (new String [] { sIssueType, aError.getErrorText (Locale.US) });
+    }
+    LOGGER.info ("Phive found " + aIssues.size () + " issue(s) for VESID " + aVESID.getAsSingleID ());
+    return aIssues;
+  }
+
+  private static void _sendWebhook (@NonNull final Element aUBLElement,
+                                    @NonNull final String sSenderURI,
+                                    @NonNull final String sDocTypeURI,
+                                    @NonNull final String sProcessURI,
+                                    @NonNull final String sFilePath)
+  {
+    final String sWebhookUrl = APConfig.getWebhookUrl ();
+    if (StringHelper.hasNoText (sWebhookUrl))
+      return;
+
+    final byte [] aXmlBytes = XMLWriter.getNodeAsBytes (aUBLElement);
+    if (aXmlBytes == null)
+    {
+      LOGGER.warn ("Webhook: failed to serialize UBL element");
+      return;
+    }
+    final String sXml = new String (aXmlBytes, StandardCharsets.UTF_8);
+    final String sToken = APConfig.getWebhookToken ();
+
+    try
+    {
+      final HttpRequest.Builder aBuilder = HttpRequest.newBuilder ()
+                                                      .uri (URI.create (sWebhookUrl))
+                                                      .timeout (Duration.ofSeconds (30))
+                                                      .header ("Content-Type", "application/xml; charset=utf-8")
+                                                      .header ("X-Peppol-Sender", sSenderURI)
+                                                      .header ("X-Peppol-DocType", sDocTypeURI)
+                                                      .header ("X-Peppol-Process", sProcessURI)
+                                                      .header ("X-Peppol-Filepath", sFilePath)
+                                                      .POST (HttpRequest.BodyPublishers.ofString (sXml, StandardCharsets.UTF_8));
+      if (StringHelper.hasText (sToken))
+        aBuilder.header ("X-Webhook-Token", sToken);
+
+      final HttpClient aClient = HttpClient.newBuilder ().connectTimeout (Duration.ofSeconds (10)).build ();
+      final HttpResponse <String> aResponse = aClient.send (aBuilder.build (), HttpResponse.BodyHandlers.ofString ());
+      LOGGER.info ("Webhook delivered to " + sWebhookUrl + " → HTTP " + aResponse.statusCode ());
+    }
+    catch (final Exception ex)
+    {
+      LOGGER.error ("Webhook delivery failed to " + sWebhookUrl, ex);
+    }
   }
 
   public void handleIncomingSBD (@NonNull final IAS4IncomingMessageMetadata aMessageMetadata,
@@ -170,7 +257,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     LOGGER.info ("  Process = " + aPeppolSBD.getProcessURIEncoded ());
     LOGGER.info ("  CountryC1 = " + aPeppolSBD.getCountryC1 ());
 
-    final IParticipantIdentifier aMLSReceiver;
+    IParticipantIdentifier aMLSReceiver;
     if (aPeppolSBD.hasMLSToValue ())
     {
       // Explicit MLS_TO provided
@@ -188,29 +275,48 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                                                     sC2SeatID.substring (3));
     }
     if (aMLSReceiver != null)
-      LOGGER.info ("  MLS Receiver = " + aMLSReceiver.getURIEncoded ());
+      LOGGER.info (" MLS Receiver = " + aMLSReceiver.getURIEncoded ());
 
-    // Example got that stores the data to disk
-    final File aFile = StorageHelper.getStorageFile (aMessageMetadata, ".sbd");
-    LOGGER.info ("Now writing SBD to '" + aFile.getAbsolutePath () + "' (" + aSBDBytes.length + " bytes)");
+    // Write SBD to disk only when dump is enabled (disabled by default in production)
+    File aFile = null;
+    if (APConfig.isIncomingDumpEnabled ())
+    {
+      aFile = StorageHelper.getStorageFile (aMessageMetadata, ".sbd");
+      LOGGER.info ("Now writing SBD to '" + aFile.getAbsolutePath () + "' (" + aSBDBytes.length + " bytes)");
 
-    if (SimpleFileIO.writeFile (aFile, aSBDBytes).isFailure ())
-      throw new IllegalStateException ("Failed to write SBD to '" +
-                                       aFile.getAbsolutePath () +
-                                       "' (" +
-                                       aSBDBytes.length +
-                                       " bytes)");
-    LOGGER.info ("Successfully wrote SBD to '" + aFile.getAbsolutePath () + "'");
+      if (SimpleFileIO.writeFile (aFile, aSBDBytes).isFailure ())
+        throw new IllegalStateException ("Failed to write SBD to '" +
+                                         aFile.getAbsolutePath () +
+                                         "' (" +
+                                         aSBDBytes.length +
+                                         " bytes)");
+      LOGGER.info ("Successfully wrote SBD to '" + aFile.getAbsolutePath () + "'");
+    }
 
     // Send MLS (Message Level Status) response back to the sender's AP
-    if (aMLSReceiver != null)
+    final String sIncomingProcess = aPeppolSBD.getProcessURIEncoded ();
+    final boolean bIsIncomingMLS = sIncomingProcess != null && sIncomingProcess.contains ("edec:mls");
+    if (bIsIncomingMLS)
     {
-      // Extract UBL element from SBD bytes for Schematron validation
-      List <String> aValidationErrors = Collections.emptyList ();
+      // For incoming MLS (e.g. TDD.MLS), the MLS_TO-derived receiver may not be registered.
+      // Use the SBDH sender participant instead (it IS registered since we sent TDD there).
+      final String sSenderURI = aPeppolSBD.getSenderURIEncoded ();
+      final int nColonIdx = sSenderURI.indexOf ("::");
+      if (nColonIdx > 0)
+      {
+        aMLSReceiver = new SimpleParticipantIdentifier (sSenderURI.substring (0, nColonIdx),
+                                                        sSenderURI.substring (nColonIdx + 2));
+        LOGGER.info ("Received MLS: overriding MLS receiver to SBDH sender: " + aMLSReceiver.getURIEncoded ());
+      }
+      else
+        LOGGER.info ("Received MLS document - will send MLS response but skip TDD");
+    }
+
+    // Extract UBL element once (reused for MLS validation and TDD generation)
+    Element aUBLElement = null;
+    {
       final Document aSBDDoc = DOMReader.readXMLDOM (aSBDBytes);
       if (aSBDDoc != null)
-      {
-        Element aUBLElement = null;
         for (Node aChild = aSBDDoc.getDocumentElement ().getFirstChild (); aChild != null; aChild = aChild.getNextSibling ())
           if (aChild.getNodeType () == Node.ELEMENT_NODE &&
               !"StandardBusinessDocumentHeader".equals (aChild.getLocalName ()))
@@ -218,28 +324,88 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
             aUBLElement = (Element) aChild;
             break;
           }
-        if (aUBLElement != null)
-          aValidationErrors = _getValidationErrors (aUBLElement, aPeppolSBD.getDocumentTypeURIEncoded ());
+    }
+
+    final String sInstanceID = aSBD.getStandardBusinessDocumentHeader ()
+                                   .getDocumentIdentification ()
+                                   .getInstanceIdentifier ();
+
+    // Fire webhook for invoice/creditnote documents (not MLS)
+    if (!bIsIncomingMLS && aUBLElement != null)
+    {
+      final Element aFinalUBLForWebhook = aUBLElement;
+      final String sFilePath = aFile != null ? aFile.getAbsolutePath () : "";
+      PhotonWorkerPool.getInstance ()
+                      .run (CAS4.LIB_NAME + " Incoming invoice webhook",
+                            () -> {
+                              try
+                              {
+                                _sendWebhook (aFinalUBLForWebhook,
+                                              aPeppolSBD.getSenderURIEncoded (),
+                                              aPeppolSBD.getDocumentTypeURIEncoded (),
+                                              aPeppolSBD.getProcessURIEncoded (),
+                                              sFilePath);
+                              }
+                              catch (final Throwable ex)
+                              {
+                                LOGGER.error ("Webhook async error", ex);
+                              }
+                            });
+    }
+
+    if (aMLSReceiver != null)
+    {
+      List <String []> aValidationErrors;
+      try
+      {
+        aValidationErrors = aUBLElement != null
+                            ? _getValidationErrors (aUBLElement, aPeppolSBD.getDocumentTypeURIEncoded ())
+                            : Collections.emptyList ();
+      }
+      catch (final Throwable t)
+      {
+        LOGGER.error ("Validation threw unexpected error - defaulting to no errors", t);
+        aValidationErrors = Collections.emptyList ();
       }
       LOGGER.info ("Validation result: " + aValidationErrors.size () + " error(s) found");
 
       final IParticipantIdentifier aFinalMLSReceiver = aMLSReceiver;
-      final String sInstanceID = aSBD.getStandardBusinessDocumentHeader ()
-                                     .getDocumentIdentification ()
-                                     .getInstanceIdentifier ();
-      final List <String> aFinalErrors = aValidationErrors;
+      final List <String []> aFinalValidationErrors = aValidationErrors;
       PhotonWorkerPool.getInstance ()
                       .run (CAS4.LIB_NAME + " Send Peppol MLS response",
                             () -> {
+                              LOGGER.info ("MLS async task starting for receiver: " + aFinalMLSReceiver.getURIEncoded ());
                               try
                               {
-                                _sendMLS (aPeppolSBD, aFinalMLSReceiver, sInstanceID, aFinalErrors);
+                                _sendMLS (aPeppolSBD, aFinalMLSReceiver, sInstanceID, aFinalValidationErrors);
                               }
-                              catch (final Exception ex)
+                              catch (final Throwable ex)
                               {
                                 LOGGER.error ("Failed to send MLS response to " +
                                               aFinalMLSReceiver.getURIEncoded (),
                                               ex);
+                              }
+                            });
+    }
+
+    // Send AE TDD for PINT-AE Invoice/CreditNote documents
+    final String sDocTypeURI = aPeppolSBD.getDocumentTypeURIEncoded ();
+    final boolean bIsPintAE = sDocTypeURI != null && sDocTypeURI.contains ("@ae-1");
+    if (bIsPintAE && !bIsIncomingMLS && aUBLElement != null)
+    {
+      final Element aFinalUBLElement = aUBLElement;
+      final String sTransportHeaderID = sInstanceID != null ? sInstanceID : UUID.randomUUID ().toString ();
+      PhotonWorkerPool.getInstance ()
+                      .run (CAS4.LIB_NAME + " Send AE TDD",
+                            () -> {
+                              LOGGER.info ("TDD async task starting for transport header: " + sTransportHeaderID);
+                              try
+                              {
+                                _sendTDD (aFinalUBLElement, sTransportHeaderID);
+                              }
+                              catch (final Throwable ex)
+                              {
+                                LOGGER.error ("Failed to send AE TDD", ex);
                               }
                             });
     }
@@ -319,10 +485,48 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     return s.replace ("&", "&amp;").replace ("<", "&lt;").replace (">", "&gt;");
   }
 
+  /**
+   * Extract BTAE-20 value directly from the UBL DOM element.
+   * Works even when UBL21Marshaller fails to parse (e.g. syntax-invalid invoices).
+   * Looks for AdditionalDocumentReference/DocumentTypeCode='aedtotal-incl-vat' and returns
+   * the DocumentDescription value stripped of the "AED " prefix.
+   */
+  @Nullable
+  private static String _getBTAE20FromDOM (@NonNull final Element aUBLElement)
+  {
+    final String CAC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2";
+    final String CBC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2";
+    for (Node aChild = aUBLElement.getFirstChild (); aChild != null; aChild = aChild.getNextSibling ())
+    {
+      if (aChild.getNodeType () == Node.ELEMENT_NODE &&
+          CAC_NS.equals (aChild.getNamespaceURI ()) &&
+          "AdditionalDocumentReference".equals (aChild.getLocalName ()))
+      {
+        String sDocTypeCode = null;
+        String sDocDesc = null;
+        for (Node aGC = aChild.getFirstChild (); aGC != null; aGC = aGC.getNextSibling ())
+          if (aGC.getNodeType () == Node.ELEMENT_NODE && CBC_NS.equals (aGC.getNamespaceURI ()))
+          {
+            if ("DocumentTypeCode".equals (aGC.getLocalName ()))
+              sDocTypeCode = aGC.getTextContent ();
+            else
+              if ("DocumentDescription".equals (aGC.getLocalName ()))
+                sDocDesc = aGC.getTextContent ();
+          }
+        if ("aedtotal-incl-vat".equals (sDocTypeCode) && sDocDesc != null)
+        {
+          final String sTrimmed = sDocDesc.trim ();
+          return sTrimmed.startsWith ("AED ") ? sTrimmed.substring (4).trim () : sTrimmed;
+        }
+      }
+    }
+    return null;
+  }
+
   private static void _sendMLS (@NonNull final PeppolSBDHData aPeppolSBD,
                                  @NonNull final IParticipantIdentifier aMLSReceiver,
                                  @Nullable final String sOriginalInstanceID,
-                                 @NonNull final List <String> aValidationErrors) throws Exception
+                                 @NonNull final List <String []> aValidationErrors) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
     final IParticipantIdentifier aSenderID = PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0235:" +
@@ -341,16 +545,21 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     // ResponseCode: AP (accepted) or RE (rejected with errors)
     final String sResponseCode = aValidationErrors.isEmpty () ? "AP" : "RE";
 
-    // Build LineResponse elements for each BV error
+    // Build LineResponse elements for each issue (SV or BV)
     final StringBuilder sbLineResponses = new StringBuilder ();
-    for (final String sError : aValidationErrors)
+    for (final String [] aIssue : aValidationErrors)
       sbLineResponses.append ("<cac:LineResponse>")
                      .append ("<cac:LineReference><cbc:LineID>/</cbc:LineID></cac:LineReference>")
                      .append ("<cac:Response>")
-                     .append ("<cbc:ResponseCode>BV</cbc:ResponseCode>")
+                     .append ("<cbc:ResponseCode>RE</cbc:ResponseCode>")
                      .append ("<cbc:Description>")
-                     .append (_escapeXML (sError))
+                     .append (_escapeXML (aIssue[1]))
                      .append ("</cbc:Description>")
+                     .append ("<cac:Status>")
+                     .append ("<cbc:StatusReasonCode listID=\"urn:peppol:edec:mls:issue-type\">")
+                     .append (aIssue[0])
+                     .append ("</cbc:StatusReasonCode>")
+                     .append ("</cac:Status>")
                      .append ("</cac:Response>")
                      .append ("</cac:LineResponse>");
 
@@ -380,7 +589,10 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                 "<cac:DocumentResponse>" +
                                 "<cac:Response><cbc:ResponseCode>" +
                                 sResponseCode +
-                                "</cbc:ResponseCode></cac:Response>" +
+                                "</cbc:ResponseCode><cbc:Description>" +
+                                (aValidationErrors.isEmpty () ? "Accepted"
+                                                              : "Rejected: " + aValidationErrors.size () + " business validation error(s)") +
+                                "</cbc:Description></cac:Response>" +
                                 "<cac:DocumentReference><cbc:ID>" +
                                 sDocRefID +
                                 "</cbc:ID></cac:DocumentReference>" +
@@ -419,6 +631,195 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                 .smpClient (aSMPClient)
                                                                 .sendMessageAndCheckForReceipt ();
     LOGGER.info ("MLS send result to " + aMLSReceiver.getURIEncoded () + ": " + eResult);
+  }
+
+  private static void _sendTDD (@NonNull final Element aUBLElement,
+                                @NonNull final String sTransportHeaderID) throws Exception
+  {
+    final String sSeatID = APConfig.getMyPeppolSeatID ();
+
+    final String sLocalName = aUBLElement.getLocalName ();
+    final boolean bIsInvoice = "Invoice".equals (sLocalName);
+    final boolean bIsCreditNote = "CreditNote".equals (sLocalName);
+    if (!bIsInvoice && !bIsCreditNote)
+    {
+      LOGGER.warn ("Cannot send TDD for unknown UBL element: " + sLocalName);
+      return;
+    }
+
+    // Serialize UBL element to bytes for UBL21 parsing
+    final byte [] aUBLBytes = XMLWriter.getNodeAsBytes (aUBLElement);
+    if (aUBLBytes == null)
+    {
+      LOGGER.warn ("Failed to serialize UBL element for TDD");
+      return;
+    }
+
+    // C5 = Tax Authority (testbed or production FTA)
+    // e.g. "0242:000006-testbed.3001" — use SimpleParticipantIdentifier to bypass ICD validation
+    final String sTDDReceiverStr = APConfig.getAETDDReceiver ();
+    final IParticipantIdentifier aTDDReceiver = new SimpleParticipantIdentifier ("iso6523-actorid-upis", sTDDReceiverStr);
+
+    // C4 = us (the receiving AP), scheme 0235
+    final IParticipantIdentifier aSenderID = PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0235:" +
+                                                                                                                            sSeatID);
+
+    // Build TDD
+    final PeppolUAETDD10Builder aTDDBuilder = new PeppolUAETDD10Builder ().documentTypeCode (EUAETDDDocumentTypeCode.SUBMIT)
+                                                                          .reporterRole (EUAETDDReporterRole.RECEIVER)
+                                                                          // C4 = us (receiving AP)
+                                                                          .reportingParty (aSenderID)
+                                                                          // C5 = Tax Authority
+                                                                          .receivingParty (new SimpleParticipantIdentifier ("iso6523-actorid-upis", sTDDReceiverStr))
+                                                                          // C2/C3 = our AP, scheme 0242, strip "POP" prefix
+                                                                          .reportersRepresentative (PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0242:" +
+                                                                                                                                                                                  sSeatID.substring (3)));
+
+    // Use arrays so aInvoice/aCreditNote are accessible in the FAILED fallback lambda
+    final InvoiceType[] aInvoiceRef = { null };
+    final CreditNoteType[] aCreditNoteRef = { null };
+
+    if (bIsInvoice)
+    {
+      aInvoiceRef[0] = UBL21Marshaller.invoice ().read (aUBLBytes);
+      if (aInvoiceRef[0] == null)
+      {
+        // Parse failed (e.g. syntax-invalid invoice) — skip SUBMIT setup, FAILED TDS fallback will run
+        LOGGER.warn ("Failed to parse Invoice for TDD - will attempt FAILED TDS directly");
+      }
+      else
+      {
+      aTDDBuilder.documentScope (EUAETDDDocumentScope.DOMESTIC)
+                 .reportedTransaction (rt -> {
+                   rt.transportHeaderID (sTransportHeaderID).initFromInvoice (aInvoiceRef[0]);
+                   // BTAE-20: only present when DocCurrency != AED
+                   // Stored in AdditionalDocumentReference[DocumentTypeCode='aedtotal-incl-vat']/DocumentDescription as "AED <value>"
+                   final var aAEDocRef = CollectionFind.findFirst (aInvoiceRef[0].getAdditionalDocumentReference (),
+                                                                   r -> "aedtotal-incl-vat".equals (r.getDocumentTypeCodeValue ()) &&
+                                                                        !r.getDocumentDescription ().isEmpty ());
+                   if (aAEDocRef != null)
+                   {
+                     final String sRaw = aAEDocRef.getDocumentDescription ().get (0).getValue ();
+                     if (sRaw != null)
+                     {
+                       final String sTrimmed = sRaw.trim ();
+                       final String sBTAE20 = sTrimmed.startsWith ("AED ") ? sTrimmed.substring (4).trim () : sTrimmed;
+                       rt.addCustomContent (new PeppolUAETDD10ReportedTransactionBuilder.CustomContent ("BTAE-20", sBTAE20));
+                     }
+                   }
+                 });
+      } // end else (aInvoiceRef[0] != null)
+    }
+    else
+    {
+      aCreditNoteRef[0] = UBL21Marshaller.creditNote ().read (aUBLBytes);
+      if (aCreditNoteRef[0] == null)
+      {
+        // Parse failed (e.g. syntax-invalid credit note) — skip SUBMIT setup, FAILED TDS fallback will run
+        LOGGER.warn ("Failed to parse CreditNote for TDD - will attempt FAILED TDS directly");
+      }
+      else
+      {
+      aTDDBuilder.documentScope (EUAETDDDocumentScope.DOMESTIC)
+                 .reportedTransaction (rt -> {
+                   rt.transportHeaderID (sTransportHeaderID).initFromCreditNote (aCreditNoteRef[0]);
+                   // BTAE-20: only present when DocCurrency != AED
+                   // Stored in AdditionalDocumentReference[DocumentTypeCode='aedtotal-incl-vat']/DocumentDescription as "AED <value>"
+                   final var aAEDocRef = CollectionFind.findFirst (aCreditNoteRef[0].getAdditionalDocumentReference (),
+                                                                   r -> "aedtotal-incl-vat".equals (r.getDocumentTypeCodeValue ()) &&
+                                                                        !r.getDocumentDescription ().isEmpty ());
+                   if (aAEDocRef != null)
+                   {
+                     final String sRaw = aAEDocRef.getDocumentDescription ().get (0).getValue ();
+                     if (sRaw != null)
+                     {
+                       final String sTrimmed = sRaw.trim ();
+                       final String sBTAE20 = sTrimmed.startsWith ("AED ") ? sTrimmed.substring (4).trim () : sTrimmed;
+                       rt.addCustomContent (new PeppolUAETDD10ReportedTransactionBuilder.CustomContent ("BTAE-20", sBTAE20));
+                     }
+                   }
+                 });
+      } // end else (aCreditNoteRef[0] != null)
+    }
+
+    TaxDataType aTDD = aTDDBuilder.build ();
+    if (aTDD == null)
+    {
+      // SUBMIT build failed (e.g. invalid invoice missing required fields)
+      // Fall back to FAILED TDS — only requires TransportHeaderID + SourceDocument + BTAE-20
+      LOGGER.warn ("SUBMIT TDD build failed - retrying as FAILED TDS (invalid document)");
+      aTDD = new PeppolUAETDD10Builder ().documentTypeCode (EUAETDDDocumentTypeCode.FAILED)
+                                        .documentScope (EUAETDDDocumentScope.DOMESTIC)
+                                        .reporterRole (EUAETDDReporterRole.RECEIVER)
+                                        .reportingParty (aSenderID)
+                                        .receivingParty (new SimpleParticipantIdentifier ("iso6523-actorid-upis",
+                                                                                          sTDDReceiverStr))
+                                        .reportersRepresentative (PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0242:" +
+                                                                                                                                                sSeatID.substring (3)))
+                                        .reportedTransaction (rt -> {
+                                          rt.transportHeaderID (sTransportHeaderID).sourceDocument (aUBLElement);
+                                          // BTAE-20: read from DOM directly — works even when UBL parse failed
+                                          final String sBTAE20 = _getBTAE20FromDOM (aUBLElement);
+                                          if (sBTAE20 != null)
+                                            rt.addCustomContent (new PeppolUAETDD10ReportedTransactionBuilder.CustomContent ("BTAE-20", sBTAE20));
+                                        })
+                                        .build ();
+    }
+    if (aTDD == null)
+    {
+      LOGGER.error ("Failed to build AE TDD - builder returned null");
+      return;
+    }
+
+    final byte [] aTDDBytes = new PeppolUAETDD10Marshaller ().getAsBytes (aTDD);
+    if (aTDDBytes == null)
+    {
+      LOGGER.error ("Failed to serialize AE TDD to bytes");
+      return;
+    }
+    LOGGER.info ("Sending AE TDD (" + aTDDBytes.length + " bytes) to " + aTDDReceiver.getURIEncoded ());
+
+    // Send via AS4
+    final IDocumentTypeIdentifier aTDDDocTypeID = PeppolIdentifierFactory.INSTANCE.createDocumentTypeIdentifierWithDefaultScheme ("urn:peppol:schema:taxdata:1.0::TaxData##urn:peppol:taxdata:ae-1::1.0");
+    final IProcessIdentifier aTDDProcessID = PeppolIdentifierFactory.INSTANCE.createProcessIdentifierWithDefaultScheme ("urn:peppol:taxreporting");
+
+    final EPeppolNetwork eStage = APConfig.getPeppolStage ();
+    final TrustedCAChecker aCAChecker = eStage.isTest () ? PeppolTrustedCA.peppolTestAP ()
+                                                         : PeppolTrustedCA.peppolProductionAP ();
+
+    final SMPClientReadOnly aSMPClient = new SMPClientReadOnly (Phase4PeppolSender.URL_PROVIDER,
+                                                                aTDDReceiver,
+                                                                eStage.getSMLInfo ());
+    APConfig.applyHttpProxySettings (aSMPClient.httpClientSettings ());
+
+    final Phase4PeppolHttpClientSettings aHCS = new Phase4PeppolHttpClientSettings ();
+    APConfig.applyHttpProxySettings (aHCS);
+
+    final Document aTDDDoc = DOMReader.readXMLDOM (aTDDBytes);
+    if (aTDDDoc == null)
+    {
+      LOGGER.error ("Failed to re-parse TDD XML for sending");
+      return;
+    }
+
+    final EAS4UserMessageSendResult eResult = Phase4PeppolSender.builder ()
+                                                                .httpClientFactory (aHCS)
+                                                                .documentTypeID (aTDDDocTypeID)
+                                                                .processID (aTDDProcessID)
+                                                                .senderParticipantID (aSenderID)
+                                                                .receiverParticipantID (aTDDReceiver)
+                                                                .senderPartyID (sSeatID)
+                                                                .countryC1 (APConfig.getMyPeppolCountryCode ())
+                                                                .payload (aTDDDoc.getDocumentElement ())
+                                                                // MLS metadata: ask Tax Authority to send MLS back to us
+                                                                .mlsType (EPeppolMLSType.ALWAYS_SEND)
+                                                                .mlsTo (new SimpleParticipantIdentifier ("iso6523-actorid-upis",
+                                                                                                        "0242:" +
+                                                                                                                               sSeatID.substring (3)))
+                                                                .peppolAP_CAChecker (aCAChecker)
+                                                                .smpClient (aSMPClient)
+                                                                .sendMessageAndCheckForReceipt ();
+    LOGGER.info ("AE TDD send result to " + aTDDReceiver.getURIEncoded () + ": " + eResult);
   }
 
   public void processAS4ResponseMessage (@NonNull final IAS4IncomingMessageMetadata aIncomingMessageMetadata,

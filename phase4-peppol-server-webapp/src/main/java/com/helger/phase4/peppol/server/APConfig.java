@@ -85,6 +85,38 @@ public final class APConfig
     return getConfig ().getAsString ("peppol.reporting.senderid");
   }
 
+  @Nullable
+  public static String getMyPeppolReportingReceiverID ()
+  {
+    return getConfig ().getAsString ("peppol.reporting.receiverid");
+  }
+
+  @Nullable
+  public static String getWebhookUrl ()
+  {
+    return getConfig ().getAsString ("phase4.webhook.url");
+  }
+
+  @Nullable
+  public static String getWebhookToken ()
+  {
+    return getConfig ().getAsString ("phase4.webhook.token");
+  }
+
+  @Nullable
+  public static String getAETDDReceiver ()
+  {
+    // C5 = Tax Authority participant ID (scheme:value)
+    // Testbed default: 0242:000006-testbed.3001
+    return getConfig ().getAsString ("peppol.ae.tdd.receiver", "0242:000006-testbed.3001");
+  }
+
+  public static boolean isIncomingDumpEnabled ()
+  {
+    // Default false in production to avoid filling disk with bot traffic
+    return getConfig ().getAsBoolean ("phase4.incoming.dump", false);
+  }
+
   public static boolean isSchedulePeppolReporting ()
   {
     return getConfig ().getAsBoolean ("peppol.reporting.scheduled", true);

@@ -28,6 +28,7 @@ import org.w3c.dom.Node;
 
 import com.helger.annotation.Nonempty;
 import com.helger.annotation.style.IsSPIImplementation;
+import com.helger.phase4.peppol.server.APConfig;
 import com.helger.base.io.stream.StreamHelper;
 import com.helger.base.numeric.mutable.MutableLong;
 import com.helger.collection.commons.ICommonsList;
@@ -65,6 +66,9 @@ public class StoringServletMessageProcessorSPI implements IAS4IncomingMessagePro
   private static void _dumpSoap (@NonNull final IAS4IncomingMessageMetadata aMessageMetadata,
                                  @NonNull final IAS4IncomingMessageState aIncomingState)
   {
+    if (!APConfig.isIncomingDumpEnabled ())
+      return;
+
     // Write formatted SOAP
     {
       final Document aSoapDoc = aIncomingState.getEffectiveDecryptedSoapDocument ();
@@ -162,8 +166,8 @@ public class StoringServletMessageProcessorSPI implements IAS4IncomingMessagePro
 
     _dumpSoap (aMessageMetadata, aIncomingState);
 
-    // Dump all incoming attachments (but only if they are repeatable)
-    if (aIncomingAttachments != null)
+    // Dump all incoming attachments (but only if dump is enabled and they are repeatable)
+    if (APConfig.isIncomingDumpEnabled () && aIncomingAttachments != null)
     {
       int nAttachmentIndex = 0;
       for (final WSS4JAttachment aIncomingAttachment : aIncomingAttachments)

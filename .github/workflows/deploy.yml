@@ -1,0 +1,64 @@
+name: Build & Deploy phase4-peppol
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'phase4-*/src/**'
+      - 'phase4-peppol-server-webapp/**'
+      - 'Dockerfile'
+      - 'pom.xml'
+
+jobs:
+  build-and-deploy:
+    name: Build Docker → Push ECR → Deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-south-1
+
+      - name: Login to ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push Docker image
+        run: |
+          docker build -t ethicfin/phase4-peppol:latest .
+          docker tag ethicfin/phase4-peppol:latest 843780049323.dkr.ecr.ap-south-1.amazonaws.com/ethicfin/phase4-peppol:latest
+          docker tag ethicfin/phase4-peppol:latest 843780049323.dkr.ecr.ap-south-1.amazonaws.com/ethicfin/phase4-peppol:${{ github.sha }}
+          docker push 843780049323.dkr.ecr.ap-south-1.amazonaws.com/ethicfin/phase4-peppol:latest
+          docker push 843780049323.dkr.ecr.ap-south-1.amazonaws.com/ethicfin/phase4-peppol:${{ github.sha }}
+
+      - name: Trigger ASG Instance Refresh
+        run: |
+          REFRESH_ID=$(aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name ethicfin-asg \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 120}' \
+            --query 'InstanceRefreshId' --output text)
+          echo "Instance refresh started: $REFRESH_ID"
+
+          for i in $(seq 1 30); do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name ethicfin-asg \
+              --instance-refresh-ids $REFRESH_ID \
+              --query 'InstanceRefreshes[0].Status' --output text)
+            echo "Status: $STATUS"
+            if [ "$STATUS" = "Successful" ]; then
+              echo "Deployment complete!"
+              exit 0
+            elif [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ]; then
+              echo "Deployment failed: $STATUS"
+              exit 1
+            fi
+            sleep 30
+          done
+          echo "Timeout waiting for refresh"
+          exit 1

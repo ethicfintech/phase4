@@ -69,8 +69,9 @@ public interface IPhase4HREDeliveryIncomingSBDHandlerSPI
    * @param aProcessingErrorMessages
    *        List for error messages that occur during processing. Never <code>null</code>.
    * @throws Exception
-   *         In case it cannot be processed.
+   *        In case it cannot be processed.
    */
+  
   void handleIncomingSBD (@NonNull IAS4IncomingMessageMetadata aMessageMetadata,
                           @NonNull HttpHeaderMap aHeaders,
                           @NonNull Ebms3UserMessage aUserMessage,

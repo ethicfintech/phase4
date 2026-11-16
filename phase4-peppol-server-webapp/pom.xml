@@ -75,6 +75,11 @@
       <version>${peppol-ap-support.version}</version>
     </dependency>
     <dependency>
+      <groupId>com.helger.peppol</groupId>
+      <artifactId>peppol-reporting-backend-inmemory</artifactId>
+      <version>${peppol-reporting.version}</version>
+    </dependency>
+    <dependency>
       <groupId>com.helger.phase4</groupId>
       <artifactId>phase4-lib</artifactId>
     </dependency>
@@ -100,6 +105,11 @@
       <groupId>com.helger.phive.rules</groupId>
       <artifactId>phive-rules-peppol</artifactId>
       <version>${phive-rules.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.helger.peppol</groupId>
+      <artifactId>peppol-uae-tdd</artifactId>
+      <version>1.0.0</version>
     </dependency>
 
     <dependency>

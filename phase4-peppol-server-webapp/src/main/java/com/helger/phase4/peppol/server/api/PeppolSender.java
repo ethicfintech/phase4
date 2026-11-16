@@ -16,21 +16,48 @@
  */
 package com.helger.phase4.peppol.server.api;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
+
 import org.jspecify.annotations.NonNull;
+import org.jspecify.annotations.Nullable;
 import org.slf4j.Logger;
 import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
 
 import com.helger.annotation.Nonempty;
 import com.helger.annotation.concurrent.Immutable;
 import com.helger.base.timing.StopWatch;
 import com.helger.base.wrapper.Wrapper;
+import com.helger.diagnostics.error.IError;
+import com.helger.diagnostics.error.level.EErrorLevel;
+import com.helger.diver.api.coord.DVRCoordinate;
+import com.helger.collection.CollectionFind;
+import com.helger.peppol.sbdh.EPeppolMLSType;
 import com.helger.peppol.sbdh.PeppolSBDHData;
+import com.helger.peppol.security.PeppolTrustedCA;
+import com.helger.peppol.servicedomain.EPeppolNetwork;
 import com.helger.peppol.sml.ISMLInfo;
+import com.helger.peppol.uae.tdd.PeppolUAETDD10Builder;
+import com.helger.peppol.uae.tdd.PeppolUAETDD10ReportedTransactionBuilder;
+import com.helger.peppol.uae.tdd.codelist.EUAETDDDocumentScope;
+import com.helger.peppol.uae.tdd.codelist.EUAETDDDocumentTypeCode;
+import com.helger.peppol.uae.tdd.codelist.EUAETDDReporterRole;
+import com.helger.peppol.uae.tdd.jaxb.PeppolUAETDD10Marshaller;
+import com.helger.peppol.uae.tdd.v100.TaxDataType;
+import com.helger.photon.io.PhotonWorkerPool;
+import com.helger.ubl21.UBL21Marshaller;
+import oasis.names.specification.ubl.schema.xsd.creditnote_21.CreditNoteType;
+import oasis.names.specification.ubl.schema.xsd.invoice_21.InvoiceType;
 import com.helger.peppolid.IDocumentTypeIdentifier;
 import com.helger.peppolid.IParticipantIdentifier;
 import com.helger.peppolid.IProcessIdentifier;
 import com.helger.peppolid.factory.IIdentifierFactory;
 import com.helger.peppolid.factory.PeppolIdentifierFactory;
+import com.helger.peppolid.simple.participant.SimpleParticipantIdentifier;
 import com.helger.phase4.client.IAS4ClientBuildMessageCallback;
 import com.helger.phase4.logging.Phase4LoggerFactory;
 import com.helger.phase4.model.message.AS4UserMessage;
@@ -43,9 +70,19 @@ import com.helger.phase4.peppol.server.APConfig;
 import com.helger.phase4.profile.peppol.Phase4PeppolHttpClientSettings;
 import com.helger.phase4.sender.EAS4UserMessageSendResult;
 import com.helger.phase4.util.Phase4Exception;
+import com.helger.phive.api.execute.ValidationExecutionManager;
+import com.helger.phive.api.executorset.IValidationExecutorSet;
+import com.helger.phive.api.executorset.ValidationExecutorSetRegistry;
+import com.helger.phive.api.result.ValidationResult;
+import com.helger.phive.api.result.ValidationResultList;
+import com.helger.phive.api.validity.IValidityDeterminator;
+import com.helger.phive.peppol.PeppolValidationPintAE;
+import com.helger.phive.xml.source.IValidationSourceXML;
+import com.helger.phive.xml.source.ValidationSourceXML;
 import com.helger.security.certificate.TrustedCAChecker;
 import com.helger.smpclient.peppol.SMPClientReadOnly;
 import com.helger.xml.serialize.read.DOMReader;
+import com.helger.xml.serialize.write.XMLWriter;
 
 /**
  * This contains the main Peppol sending code. It was extracted from the controller to make it more
@@ -58,8 +95,67 @@ public final class PeppolSender
 {
   private static final Logger LOGGER = Phase4LoggerFactory.getLogger (PeppolSender.class);
 
+  private static final ValidationExecutorSetRegistry <IValidationSourceXML> VES_REGISTRY;
+  static
+  {
+    VES_REGISTRY = new ValidationExecutorSetRegistry <> ();
+    PeppolValidationPintAE.init (VES_REGISTRY);
+  }
+
   private PeppolSender ()
   {}
+
+  /**
+   * Pre-send validation for PINT-AE documents. Returns list of error messages, empty if valid.
+   */
+  // Package-private so APIPostSendSBDH can also call it
+  @NonNull
+  static List <String> _validatePintAE (@NonNull final Element aDocElement, @NonNull final String sDocTypeID)
+  {
+    if (!sDocTypeID.contains ("@ae-1"))
+      return new ArrayList <> ();
+
+    final boolean bIsSelfBilling = sDocTypeID.contains ("selfbilling");
+    final String sLocalName = aDocElement.getLocalName ();
+    final DVRCoordinate aVESID;
+    if ("Invoice".equals (sLocalName))
+      aVESID = bIsSelfBilling ? PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_SB_INVOICE_2026_05
+                              : PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_INVOICE_2026_05;
+    else
+      if ("CreditNote".equals (sLocalName))
+        aVESID = bIsSelfBilling ? PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_SB_CREDIT_NOTE_2026_05
+                                : PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_CREDIT_NOTE_2026_05;
+      else
+        return new ArrayList <> ();
+
+    final IValidationExecutorSet <IValidationSourceXML> aVES = VES_REGISTRY.getOfID (aVESID);
+    if (aVES == null)
+    {
+      LOGGER.warn ("VES not found for VESID: " + aVESID.getAsSingleID ());
+      return new ArrayList <> ();
+    }
+
+    final byte [] aBytes = XMLWriter.getNodeAsBytes (aDocElement);
+    if (aBytes == null)
+      return new ArrayList <> ();
+    final Document aReDoc = DOMReader.readXMLDOM (aBytes);
+    if (aReDoc == null)
+      return new ArrayList <> ();
+
+    final IValidationSourceXML aSource = ValidationSourceXML.create (null, aReDoc);
+    final ValidationResultList aResultList = ValidationExecutionManager.executeValidation (IValidityDeterminator.createDefault (),
+                                                                                           aVES,
+                                                                                           aSource,
+                                                                                           Locale.US);
+    final List <String> aErrors = new ArrayList <> ();
+    for (final ValidationResult aResult : aResultList)
+      for (final IError aError : aResult.getErrorList ())
+        if (aError.getErrorLevel ().isGE (EErrorLevel.ERROR))
+          aErrors.add (aError.getErrorText (Locale.US));
+
+    LOGGER.info ("Pre-send PINT-AE validation: " + aErrors.size () + " error(s) for " + sLocalName);
+    return aErrors;
+  }
 
   /**
    * Send a Peppol message where the SBDH is created internally by phase4
@@ -99,6 +195,9 @@ public final class PeppolSender
     aSendingReport.setCountryC1 (sCountryCodeC1);
     aSendingReport.setSenderPartyID (sMyPeppolSeatID);
 
+    // Capture SBDH instance ID for TDD transport header
+    final Wrapper <String> aSBDHIDHolder = new Wrapper <> ();
+
     EAS4UserMessageSendResult eResult = null;
     boolean bExceptionCaught = false;
     final StopWatch aSW = StopWatch.createdStarted ();
@@ -110,6 +209,14 @@ public final class PeppolSender
         throw new IllegalStateException ("Failed to read provided payload as XML");
       if (aDoc.getDocumentElement ().getNamespaceURI () == null)
         throw new IllegalStateException ("Only XML payloads with a namespace are supported");
+
+      // Pre-send PINT-AE validation — reject invalid documents before sending
+      final List <String> aValidationErrors = _validatePintAE (aDoc.getDocumentElement (), sDocTypeID);
+      if (!aValidationErrors.isEmpty ())
+        throw new IllegalStateException ("Pre-send PINT-AE validation failed with " +
+                                         aValidationErrors.size () +
+                                         " error(s): " +
+                                         String.join ("; ", aValidationErrors));
 
       // Start configuring here
       IParticipantIdentifier aSenderID = aIF.parseParticipantIdentifier (sSenderID);
@@ -168,15 +275,18 @@ public final class PeppolSender
                                                                   .receiverParticipantID (aReceiverID)
                                                                   .senderPartyID (sMyPeppolSeatID)
                                                                   .countryC1 (sCountryCodeC1)
+                                                                  .mlsTo (new SimpleParticipantIdentifier ("iso6523-actorid-upis", "0242:" + sMyPeppolSeatID.substring (3)))
+                                                                  .mlsType (EPeppolMLSType.ALWAYS_SEND)
                                                                   .payload (aDoc.getDocumentElement ())
                                                                   .peppolAP_CAChecker (aAPCAChecker)
                                                                   .smpClient (aSMPClient)
                                                                   .sbdDocumentConsumer (aSBD -> {
-                                                                    // Remember SBDH Instance
-                                                                    // Identifier
-                                                                    aSendingReport.setSBDHInstanceIdentifier (aSBD.getStandardBusinessDocumentHeader ()
-                                                                                                                  .getDocumentIdentification ()
-                                                                                                                  .getInstanceIdentifier ());
+                                                                    // Remember SBDH Instance Identifier
+                                                                    final String sSBDHID = aSBD.getStandardBusinessDocumentHeader ()
+                                                                                               .getDocumentIdentification ()
+                                                                                               .getInstanceIdentifier ();
+                                                                    aSendingReport.setSBDHInstanceIdentifier (sSBDHID);
+                                                                    aSBDHIDHolder.set (sSBDHID);
                                                                   })
                                                                   .endpointURLConsumer (aSendingReport::setC3EndpointURL)
                                                                   .technicalContactConsumer (aSendingReport::setC3TechnicalContact)
@@ -222,6 +332,25 @@ public final class PeppolSender
         // TODO Enable Peppol Reporting when ready
         if (false)
           aBuilder.createAndStorePeppolReportingItemAfterSending (sEndUserID);
+
+        // Send AE TDD for PINT-AE documents (as SENDER)
+        if (sDocTypeID.contains ("@ae-1"))
+        {
+          final String sTDDTransportID = aSBDHIDHolder.isSet () ? aSBDHIDHolder.get () : UUID.randomUUID ().toString ();
+          final Document aFinalDoc = aDoc;
+          PhotonWorkerPool.getInstance ()
+                          .run ("Send AE TDD (outbound)", () -> {
+                            LOGGER.info ("Outbound TDD task starting for transport header: " + sTDDTransportID);
+                            try
+                            {
+                              _sendOutboundTDD (aFinalDoc, sTDDTransportID);
+                            }
+                            catch (final Throwable t)
+                            {
+                              LOGGER.error ("Failed to send outbound AE TDD", t);
+                            }
+                          });
+        }
       }
 
       aSendingReport.setAS4SendingResult (eResult);
@@ -253,6 +382,177 @@ public final class PeppolSender
     aSendingReport.setOverallSuccess (bSendingSuccess && !bExceptionCaught);
 
     return aSendingReport;
+  }
+
+  @Nullable
+  private static String _getBTAE20FromDOM (@NonNull final Element aUBLElement)
+  {
+    final String CAC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2";
+    final String CBC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2";
+    for (Node aChild = aUBLElement.getFirstChild (); aChild != null; aChild = aChild.getNextSibling ())
+    {
+      if (aChild.getNodeType () == Node.ELEMENT_NODE &&
+          CAC_NS.equals (aChild.getNamespaceURI ()) &&
+          "AdditionalDocumentReference".equals (aChild.getLocalName ()))
+      {
+        String sDocTypeCode = null;
+        String sDocDesc = null;
+        for (Node aGC = aChild.getFirstChild (); aGC != null; aGC = aGC.getNextSibling ())
+          if (aGC.getNodeType () == Node.ELEMENT_NODE && CBC_NS.equals (aGC.getNamespaceURI ()))
+          {
+            if ("DocumentTypeCode".equals (aGC.getLocalName ()))
+              sDocTypeCode = aGC.getTextContent ();
+            else
+              if ("DocumentDescription".equals (aGC.getLocalName ()))
+                sDocDesc = aGC.getTextContent ();
+          }
+        if ("aedtotal-incl-vat".equals (sDocTypeCode) && sDocDesc != null)
+        {
+          final String sTrimmed = sDocDesc.trim ();
+          return sTrimmed.startsWith ("AED ") ? sTrimmed.substring (4).trim () : sTrimmed;
+        }
+      }
+    }
+    return null;
+  }
+
+  private static void _sendOutboundTDD (@NonNull final Document aDoc,
+                                        @NonNull final String sTransportHeaderID) throws Exception
+  {
+    final String sSeatID = APConfig.getMyPeppolSeatID ();
+    final Element aUBLElement = aDoc.getDocumentElement ();
+
+    final String sLocalName = aUBLElement.getLocalName ();
+    final boolean bIsInvoice = "Invoice".equals (sLocalName);
+    final boolean bIsCreditNote = "CreditNote".equals (sLocalName);
+    if (!bIsInvoice && !bIsCreditNote)
+    {
+      LOGGER.warn ("Cannot send outbound TDD for unknown UBL element: " + sLocalName);
+      return;
+    }
+
+    final byte [] aUBLBytes = XMLWriter.getNodeAsBytes (aUBLElement);
+    if (aUBLBytes == null)
+    {
+      LOGGER.warn ("Failed to serialize UBL element for outbound TDD");
+      return;
+    }
+
+    final String sTDDReceiverStr = APConfig.getAETDDReceiver ();
+    final IParticipantIdentifier aTDDReceiver = new SimpleParticipantIdentifier ("iso6523-actorid-upis", sTDDReceiverStr);
+    final IParticipantIdentifier aSenderID = PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0235:" + sSeatID);
+
+    final PeppolUAETDD10Builder aTDDBuilder = new PeppolUAETDD10Builder ().documentTypeCode (EUAETDDDocumentTypeCode.SUBMIT)
+                                                                          .reporterRole (EUAETDDReporterRole.SENDER)
+                                                                          .reportingParty (aSenderID)
+                                                                          .receivingParty (new SimpleParticipantIdentifier ("iso6523-actorid-upis", sTDDReceiverStr))
+                                                                          .reportersRepresentative (PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0242:" + sSeatID.substring (3)));
+
+    final InvoiceType [] aInvoiceRef = { null };
+    final CreditNoteType [] aCreditNoteRef = { null };
+
+    if (bIsInvoice)
+    {
+      aInvoiceRef[0] = UBL21Marshaller.invoice ().read (aUBLBytes);
+      if (aInvoiceRef[0] != null)
+      {
+        aTDDBuilder.documentScope (EUAETDDDocumentScope.DOMESTIC)
+                   .reportedTransaction (rt -> {
+                     rt.transportHeaderID (sTransportHeaderID).initFromInvoice (aInvoiceRef[0]);
+                     final var aAEDocRef = CollectionFind.findFirst (aInvoiceRef[0].getAdditionalDocumentReference (),
+                                                                     r -> "aedtotal-incl-vat".equals (r.getDocumentTypeCodeValue ()) &&
+                                                                          !r.getDocumentDescription ().isEmpty ());
+                     if (aAEDocRef != null)
+                     {
+                       final String sRaw = aAEDocRef.getDocumentDescription ().get (0).getValue ();
+                       if (sRaw != null)
+                       {
+                         final String sTrimmed = sRaw.trim ();
+                         final String sBTAE20 = sTrimmed.startsWith ("AED ") ? sTrimmed.substring (4).trim () : sTrimmed;
+                         rt.addCustomContent (new PeppolUAETDD10ReportedTransactionBuilder.CustomContent ("BTAE-20", sBTAE20));
+                       }
+                     }
+                   });
+      }
+    }
+    else
+    {
+      aCreditNoteRef[0] = UBL21Marshaller.creditNote ().read (aUBLBytes);
+      if (aCreditNoteRef[0] != null)
+      {
+        aTDDBuilder.documentScope (EUAETDDDocumentScope.DOMESTIC)
+                   .reportedTransaction (rt -> {
+                     rt.transportHeaderID (sTransportHeaderID).initFromCreditNote (aCreditNoteRef[0]);
+                     final var aAEDocRef = CollectionFind.findFirst (aCreditNoteRef[0].getAdditionalDocumentReference (),
+                                                                     r -> "aedtotal-incl-vat".equals (r.getDocumentTypeCodeValue ()) &&
+                                                                          !r.getDocumentDescription ().isEmpty ());
+                     if (aAEDocRef != null)
+                     {
+                       final String sRaw = aAEDocRef.getDocumentDescription ().get (0).getValue ();
+                       if (sRaw != null)
+                       {
+                         final String sTrimmed = sRaw.trim ();
+                         final String sBTAE20 = sTrimmed.startsWith ("AED ") ? sTrimmed.substring (4).trim () : sTrimmed;
+                         rt.addCustomContent (new PeppolUAETDD10ReportedTransactionBuilder.CustomContent ("BTAE-20", sBTAE20));
+                       }
+                     }
+                   });
+      }
+    }
+
+    final TaxDataType aTDD = aTDDBuilder.build ();
+    if (aTDD == null)
+    {
+      LOGGER.error ("Failed to build outbound AE TDD - builder returned null");
+      return;
+    }
+
+    final byte [] aTDDBytes = new PeppolUAETDD10Marshaller ().getAsBytes (aTDD);
+    if (aTDDBytes == null)
+    {
+      LOGGER.error ("Failed to serialize outbound AE TDD to bytes");
+      return;
+    }
+    LOGGER.info ("Sending outbound AE TDD (" + aTDDBytes.length + " bytes) to " + aTDDReceiver.getURIEncoded ());
+
+    final IDocumentTypeIdentifier aTDDDocTypeID = PeppolIdentifierFactory.INSTANCE.createDocumentTypeIdentifierWithDefaultScheme ("urn:peppol:schema:taxdata:1.0::TaxData##urn:peppol:taxdata:ae-1::1.0");
+    final IProcessIdentifier aTDDProcessID = PeppolIdentifierFactory.INSTANCE.createProcessIdentifierWithDefaultScheme ("urn:peppol:taxreporting");
+
+    final EPeppolNetwork eStage = APConfig.getPeppolStage ();
+    final TrustedCAChecker aCAChecker = eStage.isTest () ? PeppolTrustedCA.peppolTestAP ()
+                                                         : PeppolTrustedCA.peppolProductionAP ();
+
+    final SMPClientReadOnly aSMPClient = new SMPClientReadOnly (Phase4PeppolSender.URL_PROVIDER,
+                                                                aTDDReceiver,
+                                                                eStage.getSMLInfo ());
+    APConfig.applyHttpProxySettings (aSMPClient.httpClientSettings ());
+
+    final Phase4PeppolHttpClientSettings aHCS = new Phase4PeppolHttpClientSettings ();
+    APConfig.applyHttpProxySettings (aHCS);
+
+    final Document aTDDDoc = DOMReader.readXMLDOM (aTDDBytes);
+    if (aTDDDoc == null)
+    {
+      LOGGER.error ("Failed to re-parse outbound TDD XML for sending");
+      return;
+    }
+
+    final EAS4UserMessageSendResult eTDDResult = Phase4PeppolSender.builder ()
+                                                                   .httpClientFactory (aHCS)
+                                                                   .documentTypeID (aTDDDocTypeID)
+                                                                   .processID (aTDDProcessID)
+                                                                   .senderParticipantID (aSenderID)
+                                                                   .receiverParticipantID (aTDDReceiver)
+                                                                   .senderPartyID (sSeatID)
+                                                                   .countryC1 (APConfig.getMyPeppolCountryCode ())
+                                                                   .payload (aTDDDoc.getDocumentElement ())
+                                                                   .mlsType (EPeppolMLSType.ALWAYS_SEND)
+                                                                   .mlsTo (new SimpleParticipantIdentifier ("iso6523-actorid-upis",
+                                                                                                           "0242:" + sSeatID.substring (3)))
+                                                                   .peppolAP_CAChecker (aCAChecker)
+                                                                   .smpClient (aSMPClient)
+                                                                   .sendMessageAndCheckForReceipt ();
+    LOGGER.info ("Outbound AE TDD send result to " + aTDDReceiver.getURIEncoded () + ": " + eTDDResult);
   }
 
   /**

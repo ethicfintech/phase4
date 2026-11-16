@@ -155,9 +155,15 @@ public final class AppReportingHelper
       if (StringHelper.isEmpty (sSenderID))
         throw new IllegalStateException ("No Peppol Reporting Sender ID is configured");
 
-      // Receiver: production OpenPeppol; test Helger
-      // OpenPeppol doesn't offer this participant ID on test :-/
-      final String sReceiverID = eStage.isProduction () ? CPeppolReporting.OPENPEPPOL_PARTICIPANT_ID : "9915:helger";
+      // Receiver: production OpenPeppol; test = configurable (default: OpenPeppol testbed)
+      final String sReceiverID;
+      if (eStage.isProduction ())
+        sReceiverID = CPeppolReporting.OPENPEPPOL_PARTICIPANT_ID;
+      else
+      {
+        final String sConfiguredReceiver = APConfig.getMyPeppolReportingReceiverID ();
+        sReceiverID = StringHelper.hasText (sConfiguredReceiver) ? sConfiguredReceiver : "9915:helger";
+      }
 
       final String sCountryC1 = APConfig.getMyPeppolCountryCode ();
       if (!PeppolReportingHelper.isValidCountryCode (sCountryC1))
