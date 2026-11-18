@@ -67,6 +67,7 @@ import com.helger.phase4.peppol.Phase4PeppolSender.PeppolUserMessageBuilder;
 import com.helger.phase4.peppol.Phase4PeppolSender.PeppolUserMessageSBDHBuilder;
 import com.helger.phase4.peppol.Phase4PeppolSendingReport;
 import com.helger.phase4.peppol.server.APConfig;
+import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.profile.peppol.Phase4PeppolHttpClientSettings;
 import com.helger.phase4.sender.EAS4UserMessageSendResult;
 import com.helger.phase4.util.Phase4Exception;
@@ -341,13 +342,28 @@ public final class PeppolSender
           PhotonWorkerPool.getInstance ()
                           .run ("Send AE TDD (outbound)", () -> {
                             LOGGER.info ("Outbound TDD task starting for transport header: " + sTDDTransportID);
+                            // Tell the ASP application the real outcome - "Reported to FTA"
+                            // is only set when the TDD got a valid AS4 receipt
                             try
                             {
                               _sendOutboundTDD (aFinalDoc, sTDDTransportID);
+                              TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_OUTBOUND,
+                                                              sEndUserID,
+                                                              aFinalDoc.getDocumentElement (),
+                                                              sTDDTransportID,
+                                                              true,
+                                                              "SUBMIT TDD sent to " + APConfig.getAETDDReceiver ());
                             }
                             catch (final Throwable t)
                             {
                               LOGGER.error ("Failed to send outbound AE TDD", t);
+                              TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_OUTBOUND,
+                                                              sEndUserID,
+                                                              aFinalDoc.getDocumentElement (),
+                                                              sTDDTransportID,
+                                                              false,
+                                                              t.getMessage () != null ? t.getMessage ()
+                                                                                      : t.getClass ().getName ());
                             }
                           });
         }
@@ -427,15 +443,13 @@ public final class PeppolSender
     final boolean bIsCreditNote = "CreditNote".equals (sLocalName);
     if (!bIsInvoice && !bIsCreditNote)
     {
-      LOGGER.warn ("Cannot send outbound TDD for unknown UBL element: " + sLocalName);
-      return;
+      throw new IllegalStateException ("Cannot send outbound TDD for unknown UBL element: " + sLocalName);
     }
 
     final byte [] aUBLBytes = XMLWriter.getNodeAsBytes (aUBLElement);
     if (aUBLBytes == null)
     {
-      LOGGER.warn ("Failed to serialize UBL element for outbound TDD");
-      return;
+      throw new IllegalStateException ("Failed to serialize UBL element for outbound TDD");
     }
 
     final String sTDDReceiverStr = APConfig.getAETDDReceiver ();
@@ -503,15 +517,13 @@ public final class PeppolSender
     final TaxDataType aTDD = aTDDBuilder.build ();
     if (aTDD == null)
     {
-      LOGGER.error ("Failed to build outbound AE TDD - builder returned null");
-      return;
+      throw new IllegalStateException ("Failed to build outbound AE TDD - builder returned null");
     }
 
     final byte [] aTDDBytes = new PeppolUAETDD10Marshaller ().getAsBytes (aTDD);
     if (aTDDBytes == null)
     {
-      LOGGER.error ("Failed to serialize outbound AE TDD to bytes");
-      return;
+      throw new IllegalStateException ("Failed to serialize outbound AE TDD to bytes");
     }
     LOGGER.info ("Sending outbound AE TDD (" + aTDDBytes.length + " bytes) to " + aTDDReceiver.getURIEncoded ());
 
@@ -533,10 +545,10 @@ public final class PeppolSender
     final Document aTDDDoc = DOMReader.readXMLDOM (aTDDBytes);
     if (aTDDDoc == null)
     {
-      LOGGER.error ("Failed to re-parse outbound TDD XML for sending");
-      return;
+      throw new IllegalStateException ("Failed to re-parse outbound TDD XML for sending");
     }
 
+    final Wrapper <Phase4Exception> aTDDEx = new Wrapper <> ();
     final EAS4UserMessageSendResult eTDDResult = Phase4PeppolSender.builder ()
                                                                    .httpClientFactory (aHCS)
                                                                    .documentTypeID (aTDDDocTypeID)
@@ -551,8 +563,15 @@ public final class PeppolSender
                                                                                                            "0242:" + sSeatID.substring (3)))
                                                                    .peppolAP_CAChecker (aCAChecker)
                                                                    .smpClient (aSMPClient)
-                                                                   .sendMessageAndCheckForReceipt ();
+                                                                   .sendMessageAndCheckForReceipt (aTDDEx::set);
     LOGGER.info ("Outbound AE TDD send result to " + aTDDReceiver.getURIEncoded () + ": " + eTDDResult);
+    if (!eTDDResult.isSuccess ())
+      throw new IllegalStateException ("Outbound AE TDD was not accepted by " +
+                                       aTDDReceiver.getURIEncoded () +
+                                       ": " +
+                                       eTDDResult +
+                                       (aTDDEx.isSet () ? " - " + aTDDEx.get ().getMessage () : ""),
+                                       aTDDEx.get ());
   }
 
   /**

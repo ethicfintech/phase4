@@ -45,6 +45,7 @@ import com.helger.annotation.Nonempty;
 import com.helger.annotation.style.IsSPIImplementation;
 import com.helger.base.string.StringHelper;
 import com.helger.base.string.StringParser;
+import com.helger.base.wrapper.Wrapper;
 import com.helger.collection.CollectionFind;
 import com.helger.http.CHttp;
 import com.helger.http.header.HttpHeaderMap;
@@ -74,11 +75,13 @@ import com.helger.phase4.messaging.EAS4MessageMode;
 import com.helger.phase4.model.error.EEbmsError;
 import com.helger.phase4.peppol.Phase4PeppolSender;
 import com.helger.phase4.peppol.server.APConfig;
+import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.peppol.server.storage.StorageHelper;
 import com.helger.phase4.peppol.servlet.IPhase4PeppolIncomingSBDHandlerSPI;
 import com.helger.phase4.peppol.servlet.Phase4PeppolServletMessageProcessorSPI;
 import com.helger.phase4.profile.peppol.Phase4PeppolHttpClientSettings;
 import com.helger.phase4.sender.EAS4UserMessageSendResult;
+import com.helger.phase4.util.Phase4Exception;
 import com.helger.phase4.util.Phase4IncomingException;
 import com.helger.photon.io.PhotonWorkerPool;
 import com.helger.security.certificate.CertificateHelper;
@@ -330,25 +333,63 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                    .getDocumentIdentification ()
                                    .getInstanceIdentifier ();
 
-    // Fire webhook for invoice/creditnote documents (not MLS)
+    // Fire webhook for invoice/creditnote documents (not MLS) and afterwards
+    // send the AE TDD for PINT-AE documents. Both run in ONE task, in this
+    // order, so the ASP application has stored the inbound invoice before the
+    // TDD result for it is reported.
+    final String sDocTypeURI = aPeppolSBD.getDocumentTypeURIEncoded ();
+    final boolean bIsPintAE = sDocTypeURI != null && sDocTypeURI.contains ("@ae-1");
     if (!bIsIncomingMLS && aUBLElement != null)
     {
-      final Element aFinalUBLForWebhook = aUBLElement;
+      final Element aFinalUBLElement = aUBLElement;
       final String sFilePath = aFile != null ? aFile.getAbsolutePath () : "";
+      final String sTransportHeaderID = sInstanceID != null ? sInstanceID : UUID.randomUUID ().toString ();
       PhotonWorkerPool.getInstance ()
-                      .run (CAS4.LIB_NAME + " Incoming invoice webhook",
+                      .run (CAS4.LIB_NAME + " Incoming invoice webhook + AE TDD",
                             () -> {
                               try
                               {
-                                _sendWebhook (aFinalUBLForWebhook,
+                                _sendWebhook (aFinalUBLElement,
                                               aPeppolSBD.getSenderURIEncoded (),
-                                              aPeppolSBD.getDocumentTypeURIEncoded (),
+                                              sDocTypeURI,
                                               aPeppolSBD.getProcessURIEncoded (),
                                               sFilePath);
                               }
                               catch (final Throwable ex)
                               {
                                 LOGGER.error ("Webhook async error", ex);
+                              }
+
+                              if (!bIsPintAE)
+                                return;
+
+                              LOGGER.info ("TDD async task starting for transport header: " + sTransportHeaderID);
+                              // Tell the ASP application the real outcome - "Reported to FTA"
+                              // is only set when the TDD got a valid AS4 receipt
+                              final String sReceiverURI = aPeppolSBD.getReceiverURIEncoded ();
+                              try
+                              {
+                                final EUAETDDDocumentTypeCode eTDDType = _sendTDD (aFinalUBLElement,
+                                                                                   sTransportHeaderID);
+                                TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_INBOUND,
+                                                                sReceiverURI,
+                                                                aFinalUBLElement,
+                                                                sTransportHeaderID,
+                                                                true,
+                                                                eTDDType.name () +
+                                                                      " TDD sent to " +
+                                                                      APConfig.getAETDDReceiver ());
+                              }
+                              catch (final Throwable ex)
+                              {
+                                LOGGER.error ("Failed to send AE TDD", ex);
+                                TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_INBOUND,
+                                                                sReceiverURI,
+                                                                aFinalUBLElement,
+                                                                sTransportHeaderID,
+                                                                false,
+                                                                ex.getMessage () != null ? ex.getMessage ()
+                                                                                         : ex.getClass ().getName ());
                               }
                             });
     }
@@ -384,28 +425,6 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                 LOGGER.error ("Failed to send MLS response to " +
                                               aFinalMLSReceiver.getURIEncoded (),
                                               ex);
-                              }
-                            });
-    }
-
-    // Send AE TDD for PINT-AE Invoice/CreditNote documents
-    final String sDocTypeURI = aPeppolSBD.getDocumentTypeURIEncoded ();
-    final boolean bIsPintAE = sDocTypeURI != null && sDocTypeURI.contains ("@ae-1");
-    if (bIsPintAE && !bIsIncomingMLS && aUBLElement != null)
-    {
-      final Element aFinalUBLElement = aUBLElement;
-      final String sTransportHeaderID = sInstanceID != null ? sInstanceID : UUID.randomUUID ().toString ();
-      PhotonWorkerPool.getInstance ()
-                      .run (CAS4.LIB_NAME + " Send AE TDD",
-                            () -> {
-                              LOGGER.info ("TDD async task starting for transport header: " + sTransportHeaderID);
-                              try
-                              {
-                                _sendTDD (aFinalUBLElement, sTransportHeaderID);
-                              }
-                              catch (final Throwable ex)
-                              {
-                                LOGGER.error ("Failed to send AE TDD", ex);
                               }
                             });
     }
@@ -633,8 +652,16 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     LOGGER.info ("MLS send result to " + aMLSReceiver.getURIEncoded () + ": " + eResult);
   }
 
-  private static void _sendTDD (@NonNull final Element aUBLElement,
-                                @NonNull final String sTransportHeaderID) throws Exception
+  /**
+   * Build and send the AE TDD.
+   *
+   * @return The TDD document type that was sent with a valid AS4 receipt.
+   * @throws Exception
+   *         If the TDD could not be built or was not accepted.
+   */
+  @NonNull
+  private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
+                                                   @NonNull final String sTransportHeaderID) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
 
@@ -643,16 +670,14 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     final boolean bIsCreditNote = "CreditNote".equals (sLocalName);
     if (!bIsInvoice && !bIsCreditNote)
     {
-      LOGGER.warn ("Cannot send TDD for unknown UBL element: " + sLocalName);
-      return;
+      throw new IllegalStateException ("Cannot send TDD for unknown UBL element: " + sLocalName);
     }
 
     // Serialize UBL element to bytes for UBL21 parsing
     final byte [] aUBLBytes = XMLWriter.getNodeAsBytes (aUBLElement);
     if (aUBLBytes == null)
     {
-      LOGGER.warn ("Failed to serialize UBL element for TDD");
-      return;
+      throw new IllegalStateException ("Failed to serialize UBL element for TDD");
     }
 
     // C5 = Tax Authority (testbed or production FTA)
@@ -742,9 +767,11 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
       } // end else (aCreditNoteRef[0] != null)
     }
 
+    EUAETDDDocumentTypeCode eTDDType = EUAETDDDocumentTypeCode.SUBMIT;
     TaxDataType aTDD = aTDDBuilder.build ();
     if (aTDD == null)
     {
+      eTDDType = EUAETDDDocumentTypeCode.FAILED;
       // SUBMIT build failed (e.g. invalid invoice missing required fields)
       // Fall back to FAILED TDS — only requires TransportHeaderID + SourceDocument + BTAE-20
       LOGGER.warn ("SUBMIT TDD build failed - retrying as FAILED TDS (invalid document)");
@@ -767,15 +794,13 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     }
     if (aTDD == null)
     {
-      LOGGER.error ("Failed to build AE TDD - builder returned null");
-      return;
+      throw new IllegalStateException ("Failed to build AE TDD - builder returned null");
     }
 
     final byte [] aTDDBytes = new PeppolUAETDD10Marshaller ().getAsBytes (aTDD);
     if (aTDDBytes == null)
     {
-      LOGGER.error ("Failed to serialize AE TDD to bytes");
-      return;
+      throw new IllegalStateException ("Failed to serialize AE TDD to bytes");
     }
     LOGGER.info ("Sending AE TDD (" + aTDDBytes.length + " bytes) to " + aTDDReceiver.getURIEncoded ());
 
@@ -798,10 +823,10 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     final Document aTDDDoc = DOMReader.readXMLDOM (aTDDBytes);
     if (aTDDDoc == null)
     {
-      LOGGER.error ("Failed to re-parse TDD XML for sending");
-      return;
+      throw new IllegalStateException ("Failed to re-parse TDD XML for sending");
     }
 
+    final Wrapper <Phase4Exception> aTDDEx = new Wrapper <> ();
     final EAS4UserMessageSendResult eResult = Phase4PeppolSender.builder ()
                                                                 .httpClientFactory (aHCS)
                                                                 .documentTypeID (aTDDDocTypeID)
@@ -818,8 +843,16 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                                                                                sSeatID.substring (3)))
                                                                 .peppolAP_CAChecker (aCAChecker)
                                                                 .smpClient (aSMPClient)
-                                                                .sendMessageAndCheckForReceipt ();
+                                                                .sendMessageAndCheckForReceipt (aTDDEx::set);
     LOGGER.info ("AE TDD send result to " + aTDDReceiver.getURIEncoded () + ": " + eResult);
+    if (!eResult.isSuccess ())
+      throw new IllegalStateException ("AE TDD was not accepted by " +
+                                       aTDDReceiver.getURIEncoded () +
+                                       ": " +
+                                       eResult +
+                                       (aTDDEx.isSet () ? " - " + aTDDEx.get ().getMessage () : ""),
+                                       aTDDEx.get ());
+    return eTDDType;
   }
 
   public void processAS4ResponseMessage (@NonNull final IAS4IncomingMessageMetadata aIncomingMessageMetadata,
