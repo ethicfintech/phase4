@@ -67,6 +67,21 @@ public final class Phase4API
     }
 
     {
+      // Re-send the AE Tax Data Document for an invoice (retry of a TDD that was not delivered)
+      final APIDescriptor aSendTDD = new APIDescriptor (APIPath.post ("/sendtdd/{" +
+                                                                      APIPostSendTDD.PARAM_DIRECTION +
+                                                                      "}/{" +
+                                                                      APIPostSendTDD.PARAM_TRANSPORT_HEADER_ID +
+                                                                      "}/{" +
+                                                                      APIPostSendTDD.PARAM_TDD_INSTANCE_ID +
+                                                                      "}/{" +
+                                                                      APIPostSendTDD.PARAM_FAILED +
+                                                                      "}"), new APIPostSendTDD ());
+      aSendTDD.setExceptionMapper (aExceptionMapper);
+      aAPIRegistry.registerAPI (aSendTDD);
+    }
+
+    {
       final APIDescriptor aSendSbdh = new APIDescriptor (APIPath.post ("/sendsbdh"), new APIPostSendSBDH (eStage));
       aSendSbdh.setExceptionMapper (aExceptionMapper);
       aAPIRegistry.registerAPI (aSendSbdh);

@@ -93,6 +93,40 @@ public final class TDDResultNotifier
                                    final boolean bSuccess,
                                    @Nullable final String sMessage)
   {
+    notifyResult (sDirection, sParticipantURI, aUBLElement, sTransportHeaderID, bSuccess, sMessage, null, null);
+  }
+
+  /**
+   * Post the TDD sending result to the ASP application. Never throws.
+   *
+   * @param sDirection
+   *        {@link #DIRECTION_OUTBOUND} or {@link #DIRECTION_INBOUND}
+   * @param sParticipantURI
+   *        URI encoded participant ID of our client
+   * @param aUBLElement
+   *        The Invoice or CreditNote root element the TDD was built from.
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice, used in the TDD.
+   * @param bSuccess
+   *        <code>true</code> if the TDD was sent and a valid AS4 receipt was
+   *        returned.
+   * @param sMessage
+   *        Details (TDD type on success, error text on failure).
+   * @param sTDDInstanceID
+   *        The SBDH instance identifier of the TDD itself. The MLS of the tax
+   *        authority refers to this ID.
+   * @param sTDDType
+   *        "S" (submit) or "F" (failed document)
+   */
+  public static void notifyResult (@NonNull final String sDirection,
+                                   @Nullable final String sParticipantURI,
+                                   @NonNull final Element aUBLElement,
+                                   @Nullable final String sTransportHeaderID,
+                                   final boolean bSuccess,
+                                   @Nullable final String sMessage,
+                                   @Nullable final String sTDDInstanceID,
+                                   @Nullable final String sTDDType)
+  {
     final String sUrl = APConfig.getWebhookTddResultUrl ();
     if (StringHelper.hasNoText (sUrl))
       return;
@@ -113,6 +147,8 @@ public final class TDDResultNotifier
       aJson.add ("transport_header_id", StringHelper.getNotNull (sTransportHeaderID));
       aJson.add ("success", bSuccess);
       aJson.add ("message", StringHelper.getNotNull (sMessage));
+      aJson.add ("tdd_instance_id", StringHelper.getNotNull (sTDDInstanceID));
+      aJson.add ("tdd_type", StringHelper.getNotNull (sTDDType));
 
       final HttpRequest.Builder aBuilder = HttpRequest.newBuilder ()
                                                       .uri (URI.create (sUrl))

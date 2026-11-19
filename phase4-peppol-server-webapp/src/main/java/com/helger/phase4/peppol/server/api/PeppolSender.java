@@ -380,6 +380,8 @@ public final class PeppolSender
         {
           final String sTDDTransportID = aSBDHIDHolder.isSet () ? aSBDHIDHolder.get () : UUID.randomUUID ().toString ();
           final Document aFinalDoc = aDoc;
+          // The MLS of the tax authority refers to the TDD by this ID
+          final String sTDDInstanceID = UUID.randomUUID ().toString ();
           PhotonWorkerPool.getInstance ()
                           .run ("Send AE TDD (outbound)", () -> {
                             LOGGER.info ("Outbound TDD task starting for transport header: " + sTDDTransportID);
@@ -387,13 +389,15 @@ public final class PeppolSender
                             // is only set when the TDD got a valid AS4 receipt
                             try
                             {
-                              _sendOutboundTDD (aFinalDoc, sTDDTransportID);
+                              _sendOutboundTDD (aFinalDoc, sTDDTransportID, sTDDInstanceID);
                               TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_OUTBOUND,
                                                               sEndUserID,
                                                               aFinalDoc.getDocumentElement (),
                                                               sTDDTransportID,
                                                               true,
-                                                              "SUBMIT TDD sent to " + APConfig.getAETDDReceiver ());
+                                                              "SUBMIT TDD sent to " + APConfig.getAETDDReceiver (),
+                                                              sTDDInstanceID,
+                                                              "S");
                             }
                             catch (final Throwable t)
                             {
@@ -404,7 +408,9 @@ public final class PeppolSender
                                                               sTDDTransportID,
                                                               false,
                                                               t.getMessage () != null ? t.getMessage ()
-                                                                                      : t.getClass ().getName ());
+                                                                                      : t.getClass ().getName (),
+                                                              sTDDInstanceID,
+                                                              "S");
                             }
                           });
         }
@@ -473,8 +479,30 @@ public final class PeppolSender
     return null;
   }
 
+  /**
+   * Build the AE Tax Data Document for a sent invoice or credit note and send
+   * it to the tax authority. Used for the first attempt and for re-sending.
+   *
+   * @param aDoc
+   *        The UBL Invoice or CreditNote document
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice
+   * @param sTDDInstanceID
+   *        The SBDH instance identifier to use for the TDD
+   * @throws Exception
+   *         if the TDD could not be built or was not accepted with a valid AS4
+   *         receipt
+   */
+  public static void sendOutboundTDD (@NonNull final Document aDoc,
+                                      @NonNull final String sTransportHeaderID,
+                                      @NonNull final String sTDDInstanceID) throws Exception
+  {
+    _sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID);
+  }
+
   private static void _sendOutboundTDD (@NonNull final Document aDoc,
-                                        @NonNull final String sTransportHeaderID) throws Exception
+                                        @NonNull final String sTransportHeaderID,
+                                        @NonNull final String sTDDInstanceID) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
     final Element aUBLElement = aDoc.getDocumentElement ();
@@ -593,7 +621,12 @@ public final class PeppolSender
     }
 
     final Wrapper <Phase4Exception> aTDDEx = new Wrapper <> ();
+    final Wrapper <String> aTDDSignalErrors = new Wrapper <> ();
     final EAS4UserMessageSendResult eTDDResult = Phase4PeppolSender.builder ()
+                                                                   .sbdhInstanceIdentifier (sTDDInstanceID)
+                                                                   .signalMsgConsumer ( (aSignalMsg,
+                                                                                         aMessageMetadata,
+                                                                                         aState) -> aTDDSignalErrors.set (getSignalMessageErrors (aSignalMsg)))
                                                                    .httpClientFactory (aHCS)
                                                                    .documentTypeID (aTDDDocTypeID)
                                                                    .processID (aTDDProcessID)
@@ -614,6 +647,7 @@ public final class PeppolSender
                                        aTDDReceiver.getURIEncoded () +
                                        ": " +
                                        eTDDResult +
+                                       (aTDDSignalErrors.get () != null ? " - " + aTDDSignalErrors.get () : "") +
                                        (aTDDEx.isSet () ? " - " + aTDDEx.get ().getMessage () : ""),
                                        aTDDEx.get ());
   }

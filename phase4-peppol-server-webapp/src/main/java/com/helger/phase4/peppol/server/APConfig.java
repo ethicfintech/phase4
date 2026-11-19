@@ -108,6 +108,20 @@ public final class APConfig
    *         invoice webhook URL plus <code>/tdd-result</code>.
    */
   @Nullable
+  public static String getWebhookMlsResultUrl ()
+  {
+    final String sWebhookUrl = getWebhookUrl ();
+    if (sWebhookUrl == null || sWebhookUrl.isBlank ())
+      return null;
+    final String sBase = sWebhookUrl.trim ();
+    return (sBase.endsWith ("/") ? sBase.substring (0, sBase.length () - 1) : sBase) + "/mls-result";
+  }
+
+  /**
+   * @return The URL the TDD sending result is posted to. Defaults to the
+   *         invoice webhook URL plus <code>/tdd-result</code>.
+   */
+  @Nullable
   public static String getWebhookTddResultUrl ()
   {
     final String sExplicit = getConfig ().getAsString ("phase4.webhook.tdd.url");

@@ -76,6 +76,7 @@ import com.helger.phase4.model.error.EEbmsError;
 import com.helger.phase4.peppol.Phase4PeppolSender;
 import com.helger.phase4.peppol.server.api.PeppolSender;
 import com.helger.phase4.peppol.server.APConfig;
+import com.helger.phase4.peppol.server.reporting.MLSResultNotifier;
 import com.helger.phase4.peppol.server.reporting.TDDPartyNames;
 import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.peppol.server.storage.StorageHelper;
@@ -322,6 +323,18 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
       }
       else
         LOGGER.info ("Received MLS document - will send MLS response but skip TDD");
+
+      // Never answer an MLS that we sent ourselves: when the sender and the
+      // receiver are both served by this Access Point, each answer would be
+      // received here again and answered again, without end.
+      final String sOwnSeatDigits = APConfig.getMyPeppolSeatID ().length () > 3 ? APConfig.getMyPeppolSeatID ().substring (3) : "";
+      final String sSenderLC = sSenderURI.toLowerCase (Locale.ROOT);
+      if (sSenderLC.contains (APConfig.getMyPeppolSeatID ().toLowerCase (Locale.ROOT)) ||
+          (!sOwnSeatDigits.isEmpty () && sSenderLC.endsWith (":" + sOwnSeatDigits)))
+      {
+        LOGGER.info ("Received MLS was sent by ourselves (" + sSenderURI + ") - no MLS response is sent");
+        aMLSReceiver = null;
+      }
     }
 
     // Extract UBL element once (reused for MLS validation and TDD generation)
@@ -357,6 +370,16 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     if (aUBLElement != null && aUBLBytes == null)
       LOGGER.error ("The incoming business document could not be serialized - webhook and AE TDD are skipped");
 
+    if (bIsIncomingMLS && aUBLBytes != null)
+    {
+      // Tell the ASP application the verdict (of the tax authority on a TDD, or
+      // of the receiving Access Point on an invoice)
+      final String sMLSSenderURI = aPeppolSBD.getSenderURIEncoded ();
+      PhotonWorkerPool.getInstance ()
+                      .run (CAS4.LIB_NAME + " Forward received MLS",
+                            () -> MLSResultNotifier.notifyReceivedMLS (aUBLBytes, sMLSSenderURI));
+    }
+
     final String sInstanceID = aSBD.getStandardBusinessDocumentHeader ()
                                    .getDocumentIdentification ()
                                    .getInstanceIdentifier ();
@@ -388,6 +411,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     {
       final String sFilePath = aFile != null ? aFile.getAbsolutePath () : "";
       final String sTransportHeaderID = sInstanceID != null ? sInstanceID : UUID.randomUUID ().toString ();
+      // The MLS of the tax authority refers to the TDD by this ID
+      final String sTDDInstanceID = UUID.randomUUID ().toString ();
       PhotonWorkerPool.getInstance ()
                       .run (CAS4.LIB_NAME + " Incoming invoice webhook + AE TDD",
                             () -> {
@@ -423,7 +448,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                               {
                                 final EUAETDDDocumentTypeCode eTDDType = _sendTDD (aFinalUBLElement,
                                                                                    sTransportHeaderID,
-                                                                                   bValidationFailed);
+                                                                                   bValidationFailed,
+                                                                                   sTDDInstanceID);
                                 TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_INBOUND,
                                                                 sReceiverURI,
                                                                 aFinalUBLElement,
@@ -431,7 +457,9 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                 true,
                                                                 eTDDType.name () +
                                                                       " TDD sent to " +
-                                                                      APConfig.getAETDDReceiver ());
+                                                                      APConfig.getAETDDReceiver (),
+                                                                sTDDInstanceID,
+                                                                eTDDType == EUAETDDDocumentTypeCode.FAILED ? "F" : "S");
                               }
                               catch (final Throwable ex)
                               {
@@ -442,7 +470,9 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                 sTransportHeaderID,
                                                                 false,
                                                                 ex.getMessage () != null ? ex.getMessage ()
-                                                                                         : ex.getClass ().getName ());
+                                                                                         : ex.getClass ().getName (),
+                                                                sTDDInstanceID,
+                                                                bValidationFailed ? "F" : "S");
                               }
                             });
     }
@@ -699,9 +729,36 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
    *         If the TDD could not be built or was not accepted.
    */
   @NonNull
+  /**
+   * Build the AE Tax Data Document for a received invoice or credit note and
+   * send it to the tax authority. Used for re-sending.
+   *
+   * @param aUBLElement
+   *        The UBL Invoice or CreditNote root element
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice
+   * @param bValidationFailed
+   *        <code>true</code> to report the document as FAILED
+   * @param sTDDInstanceID
+   *        The SBDH instance identifier to use for the TDD
+   * @return The type of the TDD that was sent
+   * @throws Exception
+   *         if the TDD could not be built or was not accepted with a valid AS4
+   *         receipt
+   */
+  @NonNull
+  public static EUAETDDDocumentTypeCode sendInboundTDD (@NonNull final Element aUBLElement,
+                                                        @NonNull final String sTransportHeaderID,
+                                                        final boolean bValidationFailed,
+                                                        @NonNull final String sTDDInstanceID) throws Exception
+  {
+    return _sendTDD (aUBLElement, sTransportHeaderID, bValidationFailed, sTDDInstanceID);
+  }
+
   private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
                                                    @NonNull final String sTransportHeaderID,
-                                                   final boolean bValidationFailed) throws Exception
+                                                   final boolean bValidationFailed,
+                                                   @NonNull final String sTDDInstanceID) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
 
@@ -877,6 +934,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     final Wrapper <Phase4Exception> aTDDEx = new Wrapper <> ();
     final Wrapper <String> aTDDSignalErrors = new Wrapper <> ();
     final EAS4UserMessageSendResult eResult = Phase4PeppolSender.builder ()
+                                                                .sbdhInstanceIdentifier (sTDDInstanceID)
                                                                 .httpClientFactory (aHCS)
                                                                 .documentTypeID (aTDDDocTypeID)
                                                                 .processID (aTDDProcessID)
