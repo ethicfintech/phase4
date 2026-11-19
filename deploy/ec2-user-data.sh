@@ -11,9 +11,9 @@ GATEWAY_IMAGE=$ECR/ethicfin/phase4-peppol:latest
 GATEWAY_FALLBACK_IMAGE=phase4-peppol:latest
 # Gateway settings that differ from the defaults inside the image (Java system properties).
 # - phase4.webhook.url: inbound invoices go to the app on this same server (nginx, port 8888)
-# - to change the tax authority receiver of the Tax Data Document add:
-#     -Dpeppol.ae.tdd.receiver=<scheme:value>
-GATEWAY_OPTS="-Dphase4.webhook.url=http://172.17.0.1:8888/peppol/webhook"
+# - peppol.ae.tdd.receiver: the tax authority participant that receives the Tax Data Document
+#   (Peppol testbed value; replace with the FTA's production ID when MOF provides it)
+GATEWAY_OPTS="-Dphase4.webhook.url=http://172.17.0.1:8888/peppol/webhook -Dpeppol.ae.tdd.receiver=0242:000006-MLS.3001"
 
 # ── 1. PHP application ──────────────────────────────────────────────────────
 (
