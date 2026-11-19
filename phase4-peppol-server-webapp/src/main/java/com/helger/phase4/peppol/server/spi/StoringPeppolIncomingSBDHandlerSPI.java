@@ -133,8 +133,6 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     return aRegistry;
   }
 
-  // Returns list of {issueType ("SV" or "BV"), errorText} pairs
-  @NonNull
   /**
    * The single issue reported when a PINT-AE document could not be validated at
    * all. Such a document is rejected (MLS "RE"): accepting a document that was
@@ -155,7 +153,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
    *        <code>null</code> if it could not be extracted.
    * @param sDocTypeURI
    *        Peppol document type identifier
-   * @return The list of validation errors. Empty means "valid".
+   * @return The list of validation errors as {issueType ("SV" or "BV"), errorText} pairs. Empty
+   *         means "valid".
    */
   @NonNull
   private static List <String []> _getValidationErrors (final byte @Nullable [] aUBLBytes,
