@@ -69,6 +69,7 @@ import com.helger.phase4.peppol.Phase4PeppolSender.PeppolUserMessageBuilder;
 import com.helger.phase4.peppol.Phase4PeppolSender.PeppolUserMessageSBDHBuilder;
 import com.helger.phase4.peppol.Phase4PeppolSendingReport;
 import com.helger.phase4.peppol.server.APConfig;
+import com.helger.phase4.peppol.server.reporting.TDDPartyNames;
 import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.profile.peppol.Phase4PeppolHttpClientSettings;
 import com.helger.phase4.sender.EAS4UserMessageSendResult;
@@ -559,6 +560,9 @@ public final class PeppolSender
     {
       throw new IllegalStateException ("Failed to build outbound AE TDD - builder returned null");
     }
+    // Seller and buyer name (ibr-tdd-58, ibr-tdd-60)
+    TDDPartyNames.applyFromInvoice (aTDD, aInvoiceRef[0]);
+    TDDPartyNames.applyFromCreditNote (aTDD, aCreditNoteRef[0]);
 
     final byte [] aTDDBytes = new PeppolUAETDD10Marshaller ().getAsBytes (aTDD);
     if (aTDDBytes == null)

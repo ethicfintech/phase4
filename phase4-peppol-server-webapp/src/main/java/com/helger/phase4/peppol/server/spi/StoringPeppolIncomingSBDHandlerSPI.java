@@ -76,6 +76,7 @@ import com.helger.phase4.model.error.EEbmsError;
 import com.helger.phase4.peppol.Phase4PeppolSender;
 import com.helger.phase4.peppol.server.api.PeppolSender;
 import com.helger.phase4.peppol.server.APConfig;
+import com.helger.phase4.peppol.server.reporting.TDDPartyNames;
 import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.peppol.server.storage.StorageHelper;
 import com.helger.phase4.peppol.servlet.IPhase4PeppolIncomingSBDHandlerSPI;
@@ -366,6 +367,23 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     // TDD result for it is reported.
     final String sDocTypeURI = aPeppolSBD.getDocumentTypeURIEncoded ();
     final boolean bIsPintAE = sDocTypeURI != null && sDocTypeURI.contains ("@ae-1");
+
+    // Validate first: the result decides the MLS response (AP or RE) AND the type
+    // of the Tax Data Document (SUBMIT for a valid document, FAILED otherwise)
+    List <String []> aValidationErrorsTmp;
+    try
+    {
+      aValidationErrorsTmp = bIsIncomingMLS || sDocTypeURI == null ? Collections.emptyList ()
+                                                                   : _getValidationErrors (aUBLBytes, sDocTypeURI);
+    }
+    catch (final Throwable t)
+    {
+      LOGGER.error ("Validation threw unexpected error", t);
+      aValidationErrorsTmp = bIsPintAE ? _notValidated ("internal validation error") : Collections.emptyList ();
+    }
+    final List <String []> aValidationErrors = aValidationErrorsTmp;
+    final boolean bValidationFailed = !aValidationErrors.isEmpty ();
+    LOGGER.info ("Validation result: " + aValidationErrors.size () + " error(s) found");
     if (!bIsIncomingMLS && aUBLBytes != null)
     {
       final String sFilePath = aFile != null ? aFile.getAbsolutePath () : "";
@@ -404,7 +422,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                               try
                               {
                                 final EUAETDDDocumentTypeCode eTDDType = _sendTDD (aFinalUBLElement,
-                                                                                   sTransportHeaderID);
+                                                                                   sTransportHeaderID,
+                                                                                   bValidationFailed);
                                 TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_INBOUND,
                                                                 sReceiverURI,
                                                                 aFinalUBLElement,
@@ -430,20 +449,6 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
 
     if (aMLSReceiver != null)
     {
-      List <String []> aValidationErrors;
-      try
-      {
-        aValidationErrors = bIsIncomingMLS ? Collections.emptyList ()
-                                           : _getValidationErrors (aUBLBytes,
-                                                                   aPeppolSBD.getDocumentTypeURIEncoded ());
-      }
-      catch (final Throwable t)
-      {
-        LOGGER.error ("Validation threw unexpected error", t);
-        aValidationErrors = bIsPintAE ? _notValidated ("internal validation error") : Collections.emptyList ();
-      }
-      LOGGER.info ("Validation result: " + aValidationErrors.size () + " error(s) found");
-
       final IParticipantIdentifier aFinalMLSReceiver = aMLSReceiver;
       final List <String []> aFinalValidationErrors = aValidationErrors;
       PhotonWorkerPool.getInstance ()
@@ -695,7 +700,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
    */
   @NonNull
   private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
-                                                   @NonNull final String sTransportHeaderID) throws Exception
+                                                   @NonNull final String sTransportHeaderID,
+                                                   final boolean bValidationFailed) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
 
@@ -802,13 +808,21 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     }
 
     EUAETDDDocumentTypeCode eTDDType = EUAETDDDocumentTypeCode.SUBMIT;
-    TaxDataType aTDD = aTDDBuilder.build ();
-    if (aTDD == null)
+    // A document that failed validation is reported as FAILED, never as SUBMIT
+    TaxDataType aTDD = bValidationFailed ? null : aTDDBuilder.build ();
+    if (aTDD != null)
+    {
+      // Seller and buyer name (ibr-tdd-58, ibr-tdd-60)
+      TDDPartyNames.applyFromInvoice (aTDD, aInvoiceRef[0]);
+      TDDPartyNames.applyFromCreditNote (aTDD, aCreditNoteRef[0]);
+    }
+    else
     {
       eTDDType = EUAETDDDocumentTypeCode.FAILED;
-      // SUBMIT build failed (e.g. invalid invoice missing required fields)
-      // Fall back to FAILED TDS — only requires TransportHeaderID + SourceDocument + BTAE-20
-      LOGGER.warn ("SUBMIT TDD build failed - retrying as FAILED TDS (invalid document)");
+      // The document failed validation, or the SUBMIT build failed (e.g. required fields missing).
+      // FAILED TDS — only requires TransportHeaderID + SourceDocument + BTAE-20
+      LOGGER.warn (bValidationFailed ? "The document failed validation - reporting it as FAILED TDS"
+                                     : "SUBMIT TDD build failed - retrying as FAILED TDS (invalid document)");
       aTDD = new PeppolUAETDD10Builder ().documentTypeCode (EUAETDDDocumentTypeCode.FAILED)
                                         .documentScope (EUAETDDDocumentScope.DOMESTIC)
                                         .reporterRole (EUAETDDReporterRole.RECEIVER)
