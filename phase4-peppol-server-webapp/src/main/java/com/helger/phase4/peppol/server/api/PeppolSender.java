@@ -480,6 +480,31 @@ public final class PeppolSender
   }
 
   /**
+   * The TDD document scope. An export to a buyer that is not in the Peppol
+   * network carries the predefined buyer address 0235:9900000099 and is
+   * reported as "international, non-Peppol"; everything else is domestic.
+   */
+  @NonNull
+  private static EUAETDDDocumentScope _getTDDScope (@NonNull final Document aDoc)
+  {
+    final String CAC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2";
+    final String CBC_NS = "urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2";
+    final org.w3c.dom.NodeList aCustomers = aDoc.getElementsByTagNameNS (CAC_NS, "AccountingCustomerParty");
+    if (aCustomers.getLength () > 0)
+    {
+      final org.w3c.dom.NodeList aEndpoints = ((org.w3c.dom.Element) aCustomers.item (0)).getElementsByTagNameNS (CBC_NS,
+                                                                                                                  "EndpointID");
+      if (aEndpoints.getLength () > 0)
+      {
+        final String sEndpoint = aEndpoints.item (0).getTextContent ();
+        if (sEndpoint != null && "9900000099".equals (sEndpoint.trim ()))
+          return EUAETDDDocumentScope.INTERNATIONAL_NON_PEPPOL;
+      }
+    }
+    return EUAETDDDocumentScope.DOMESTIC;
+  }
+
+  /**
    * Build the AE Tax Data Document for a sent invoice or credit note and send
    * it to the tax authority. Used for the first attempt and for re-sending.
    *
@@ -539,7 +564,7 @@ public final class PeppolSender
       aInvoiceRef[0] = UBL21Marshaller.invoice ().read (aUBLBytes);
       if (aInvoiceRef[0] != null)
       {
-        aTDDBuilder.documentScope (EUAETDDDocumentScope.DOMESTIC)
+        aTDDBuilder.documentScope (_getTDDScope (aDoc))
                    .reportedTransaction (rt -> {
                      rt.transportHeaderID (sTransportHeaderID).initFromInvoice (aInvoiceRef[0]);
                      final var aAEDocRef = CollectionFind.findFirst (aInvoiceRef[0].getAdditionalDocumentReference (),
@@ -563,7 +588,7 @@ public final class PeppolSender
       aCreditNoteRef[0] = UBL21Marshaller.creditNote ().read (aUBLBytes);
       if (aCreditNoteRef[0] != null)
       {
-        aTDDBuilder.documentScope (EUAETDDDocumentScope.DOMESTIC)
+        aTDDBuilder.documentScope (_getTDDScope (aDoc))
                    .reportedTransaction (rt -> {
                      rt.transportHeaderID (sTransportHeaderID).initFromCreditNote (aCreditNoteRef[0]);
                      final var aAEDocRef = CollectionFind.findFirst (aCreditNoteRef[0].getAdditionalDocumentReference (),

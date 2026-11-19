@@ -67,6 +67,15 @@ public final class Phase4API
     }
 
     {
+      // Is a participant registered in the Peppol network?
+      final APIDescriptor aLookup = new APIDescriptor (APIPath.get ("/lookup/{" +
+                                                                    APIGetLookupParticipant.PARAM_PARTICIPANT_ID +
+                                                                    "}"), new APIGetLookupParticipant (eStage));
+      aLookup.setExceptionMapper (aExceptionMapper);
+      aAPIRegistry.registerAPI (aLookup);
+    }
+
+    {
       // Re-send the AE Tax Data Document for an invoice (retry of a TDD that was not delivered)
       final APIDescriptor aSendTDD = new APIDescriptor (APIPath.post ("/sendtdd/{" +
                                                                       APIPostSendTDD.PARAM_DIRECTION +
