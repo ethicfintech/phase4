@@ -728,7 +728,6 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
    * @throws Exception
    *         If the TDD could not be built or was not accepted.
    */
-  @NonNull
   /**
    * Build the AE Tax Data Document for a received invoice or credit note and
    * send it to the tax authority. Used for re-sending.
@@ -755,6 +754,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     return _sendTDD (aUBLElement, sTransportHeaderID, bValidationFailed, sTDDInstanceID);
   }
 
+  @NonNull
   private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
                                                    @NonNull final String sTransportHeaderID,
                                                    final boolean bValidationFailed,
