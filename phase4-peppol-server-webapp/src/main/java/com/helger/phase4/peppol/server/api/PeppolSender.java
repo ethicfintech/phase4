@@ -59,6 +59,8 @@ import com.helger.peppolid.factory.IIdentifierFactory;
 import com.helger.peppolid.factory.PeppolIdentifierFactory;
 import com.helger.peppolid.simple.participant.SimpleParticipantIdentifier;
 import com.helger.phase4.client.IAS4ClientBuildMessageCallback;
+import com.helger.phase4.ebms3header.Ebms3Error;
+import com.helger.phase4.ebms3header.Ebms3SignalMessage;
 import com.helger.phase4.logging.Phase4LoggerFactory;
 import com.helger.phase4.model.message.AS4UserMessage;
 import com.helger.phase4.model.message.AbstractAS4Message;
@@ -95,6 +97,43 @@ import com.helger.xml.serialize.write.XMLWriter;
 public final class PeppolSender
 {
   private static final Logger LOGGER = Phase4LoggerFactory.getLogger (PeppolSender.class);
+
+  /**
+   * @param aSignalMsg
+   *        The AS4 signal message received as the synchronous response. May be
+   *        <code>null</code>.
+   * @return The EBMS errors of the signal message as one text (error code,
+   *         short description, description, detail), or <code>null</code> if
+   *         it contains no error.
+   */
+  @Nullable
+  public static String getSignalMessageErrors (@Nullable final Ebms3SignalMessage aSignalMsg)
+  {
+    if (aSignalMsg == null || aSignalMsg.getError ().isEmpty ())
+      return null;
+    final StringBuilder aSB = new StringBuilder ();
+    for (final Ebms3Error aError : aSignalMsg.getError ())
+    {
+      if (aSB.length () > 0)
+        aSB.append (" | ");
+      aSB.append ('[')
+         .append (aError.getErrorCode ())
+         .append ("] ")
+         .append (aError.getShortDescription ())
+         .append (": ")
+         .append (aError.getDescriptionValue ())
+         .append (" / ")
+         .append (aError.getErrorDetail ());
+    }
+    return aSB.toString ();
+  }
+
+  private static void _logSignalMessageErrors (@Nullable final Ebms3SignalMessage aSignalMsg)
+  {
+    final String sErrors = getSignalMessageErrors (aSignalMsg);
+    if (sErrors != null)
+      LOGGER.error ("The receiving Access Point answered with an AS4 error: " + sErrors);
+  }
 
   private static final ValidationExecutorSetRegistry <IValidationSourceXML> VES_REGISTRY;
   static
@@ -319,6 +358,7 @@ public final class PeppolSender
                                                                                         aMessageMetadata,
                                                                                         aState) -> {
                                                                     aSendingReport.setAS4ReceivedSignalMsg (aSignalMsg);
+                                                                    _logSignalMessageErrors (aSignalMsg);
                                                                   });
       final Wrapper <Phase4Exception> aCaughtEx = new Wrapper <> ();
       eResult = aBuilder.sendMessageAndCheckForReceipt (aCaughtEx::set);
@@ -646,6 +686,7 @@ public final class PeppolSender
                                                                                             aMessageMetadata,
                                                                                             aState) -> {
                                                                         aSendingReport.setAS4ReceivedSignalMsg (aSignalMsg);
+                                                                        _logSignalMessageErrors (aSignalMsg);
                                                                       });
       final Wrapper <Phase4Exception> aCaughtEx = new Wrapper <> ();
       eResult = aBuilder.sendMessageAndCheckForReceipt (aCaughtEx::set);

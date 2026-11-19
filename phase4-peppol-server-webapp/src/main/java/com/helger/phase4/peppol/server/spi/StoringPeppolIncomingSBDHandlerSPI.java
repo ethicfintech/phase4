@@ -74,6 +74,7 @@ import com.helger.phase4.logging.Phase4LoggerFactory;
 import com.helger.phase4.messaging.EAS4MessageMode;
 import com.helger.phase4.model.error.EEbmsError;
 import com.helger.phase4.peppol.Phase4PeppolSender;
+import com.helger.phase4.peppol.server.api.PeppolSender;
 import com.helger.phase4.peppol.server.APConfig;
 import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.peppol.server.storage.StorageHelper;
@@ -134,15 +135,46 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
 
   // Returns list of {issueType ("SV" or "BV"), errorText} pairs
   @NonNull
-  private static List <String []> _getValidationErrors (@NonNull final Element aUBLElement,
+  /**
+   * The single issue reported when a PINT-AE document could not be validated at
+   * all. Such a document is rejected (MLS "RE"): accepting a document that was
+   * never checked would be worse than asking the sender to send it again.
+   */
+  @NonNull
+  private static List <String []> _notValidated (@NonNull final String sReason)
+  {
+    LOGGER.error ("PINT-AE validation could not be performed: " + sReason + " - the document is rejected");
+    final List <String []> ret = new ArrayList <> ();
+    ret.add (new String [] { "BV", "The document could not be validated by the receiving Access Point: " + sReason });
+    return ret;
+  }
+
+  /**
+   * @param aUBLBytes
+   *        The business document, serialized once on the request thread. May be
+   *        <code>null</code> if it could not be extracted.
+   * @param sDocTypeURI
+   *        Peppol document type identifier
+   * @return The list of validation errors. Empty means "valid".
+   */
+  @NonNull
+  private static List <String []> _getValidationErrors (final byte @Nullable [] aUBLBytes,
                                                          @NonNull final String sDocTypeURI)
   {
     // Only validate AE PINT documents
     if (!sDocTypeURI.contains ("@ae-1"))
       return Collections.<String []> emptyList ();
 
+    if (aUBLBytes == null)
+      return _notValidated ("the business document could not be read from the message");
+
+    // Parse into a DOM that belongs to this thread only
+    final Document aUBLDoc = DOMReader.readXMLDOM (aUBLBytes);
+    if (aUBLDoc == null || aUBLDoc.getDocumentElement () == null)
+      return _notValidated ("the business document is not well-formed XML");
+
     final boolean bIsSelfBilling = sDocTypeURI.contains ("selfbilling");
-    final String sLocalName = aUBLElement.getLocalName ();
+    final String sLocalName = aUBLDoc.getDocumentElement ().getLocalName ();
     final DVRCoordinate aVESID;
     if ("Invoice".equals (sLocalName))
       aVESID = bIsSelfBilling ? PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_SB_INVOICE_2026_05
@@ -152,28 +184,11 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
         aVESID = bIsSelfBilling ? PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_SB_CREDIT_NOTE_2026_05
                                 : PeppolValidationPintAE.VID_OPENPEPPOL_AE_PINT_CREDIT_NOTE_2026_05;
       else
-        return Collections.<String []> emptyList ();
+        return _notValidated ("the root element '" + sLocalName + "' is neither Invoice nor CreditNote");
 
     final IValidationExecutorSet <IValidationSourceXML> aVES = VES_REGISTRY.getOfID (aVESID);
     if (aVES == null)
-    {
-      LOGGER.warn ("VES not found in registry for VESID: " + aVESID.getAsSingleID ());
-      return Collections.<String []> emptyList ();
-    }
-
-    // Re-serialize the element to ensure namespace declarations are on the root
-    final byte [] aUBLBytes = XMLWriter.getNodeAsBytes (aUBLElement);
-    if (aUBLBytes == null)
-    {
-      LOGGER.warn ("Failed to serialize UBL element for validation");
-      return Collections.<String []> emptyList ();
-    }
-    final Document aUBLDoc = DOMReader.readXMLDOM (aUBLBytes);
-    if (aUBLDoc == null)
-    {
-      LOGGER.warn ("Failed to re-parse serialized UBL element");
-      return Collections.<String []> emptyList ();
-    }
+      return _notValidated ("the rule set " + aVESID.getAsSingleID () + " is not available");
 
     final IValidationSourceXML aSource = ValidationSourceXML.create (null, aUBLDoc);
     final ValidationResultList aResultList = ValidationExecutionManager.executeValidation (IValidityDeterminator.createDefault (),
@@ -196,7 +211,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     return aIssues;
   }
 
-  private static void _sendWebhook (@NonNull final Element aUBLElement,
+  private static void _sendWebhook (final byte @NonNull [] aXmlBytes,
                                     @NonNull final String sSenderURI,
                                     @NonNull final String sDocTypeURI,
                                     @NonNull final String sProcessURI,
@@ -206,12 +221,6 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     if (StringHelper.hasNoText (sWebhookUrl))
       return;
 
-    final byte [] aXmlBytes = XMLWriter.getNodeAsBytes (aUBLElement);
-    if (aXmlBytes == null)
-    {
-      LOGGER.warn ("Webhook: failed to serialize UBL element");
-      return;
-    }
     final String sXml = new String (aXmlBytes, StandardCharsets.UTF_8);
     final String sToken = APConfig.getWebhookToken ();
 
@@ -329,6 +338,25 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
           }
     }
 
+    // Serialize the business document ONCE, here on the request thread, before
+    // any background task is started. A DOM tree must not be read by several
+    // threads at the same time (Xerces fails with a NullPointerException in
+    // ParentNode.nodeListItem), so every consumer below gets these bytes and
+    // parses a DOM of its own.
+    byte [] aUBLBytesTmp = null;
+    if (aUBLElement != null)
+      try
+      {
+        aUBLBytesTmp = XMLWriter.getNodeAsBytes (aUBLElement);
+      }
+      catch (final RuntimeException ex)
+      {
+        LOGGER.error ("Failed to serialize the incoming business document", ex);
+      }
+    final byte [] aUBLBytes = aUBLBytesTmp;
+    if (aUBLElement != null && aUBLBytes == null)
+      LOGGER.error ("The incoming business document could not be serialized - webhook and AE TDD are skipped");
+
     final String sInstanceID = aSBD.getStandardBusinessDocumentHeader ()
                                    .getDocumentIdentification ()
                                    .getInstanceIdentifier ();
@@ -339,9 +367,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     // TDD result for it is reported.
     final String sDocTypeURI = aPeppolSBD.getDocumentTypeURIEncoded ();
     final boolean bIsPintAE = sDocTypeURI != null && sDocTypeURI.contains ("@ae-1");
-    if (!bIsIncomingMLS && aUBLElement != null)
+    if (!bIsIncomingMLS && aUBLBytes != null)
     {
-      final Element aFinalUBLElement = aUBLElement;
       final String sFilePath = aFile != null ? aFile.getAbsolutePath () : "";
       final String sTransportHeaderID = sInstanceID != null ? sInstanceID : UUID.randomUUID ().toString ();
       PhotonWorkerPool.getInstance ()
@@ -349,7 +376,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                             () -> {
                               try
                               {
-                                _sendWebhook (aFinalUBLElement,
+                                _sendWebhook (aUBLBytes,
                                               aPeppolSBD.getSenderURIEncoded (),
                                               sDocTypeURI,
                                               aPeppolSBD.getProcessURIEncoded (),
@@ -367,6 +394,14 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                               // Tell the ASP application the real outcome - "Reported to FTA"
                               // is only set when the TDD got a valid AS4 receipt
                               final String sReceiverURI = aPeppolSBD.getReceiverURIEncoded ();
+                              // A DOM used by this task only
+                              final Document aTaskDoc = DOMReader.readXMLDOM (aUBLBytes);
+                              if (aTaskDoc == null || aTaskDoc.getDocumentElement () == null)
+                              {
+                                LOGGER.error ("Failed to parse the business document for the AE TDD");
+                                return;
+                              }
+                              final Element aFinalUBLElement = aTaskDoc.getDocumentElement ();
                               try
                               {
                                 final EUAETDDDocumentTypeCode eTDDType = _sendTDD (aFinalUBLElement,
@@ -399,14 +434,14 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
       List <String []> aValidationErrors;
       try
       {
-        aValidationErrors = aUBLElement != null
-                            ? _getValidationErrors (aUBLElement, aPeppolSBD.getDocumentTypeURIEncoded ())
-                            : Collections.emptyList ();
+        aValidationErrors = bIsIncomingMLS ? Collections.emptyList ()
+                                           : _getValidationErrors (aUBLBytes,
+                                                                   aPeppolSBD.getDocumentTypeURIEncoded ());
       }
       catch (final Throwable t)
       {
-        LOGGER.error ("Validation threw unexpected error - defaulting to no errors", t);
-        aValidationErrors = Collections.emptyList ();
+        LOGGER.error ("Validation threw unexpected error", t);
+        aValidationErrors = bIsPintAE ? _notValidated ("internal validation error") : Collections.emptyList ();
       }
       LOGGER.info ("Validation result: " + aValidationErrors.size () + " error(s) found");
 
@@ -827,6 +862,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     }
 
     final Wrapper <Phase4Exception> aTDDEx = new Wrapper <> ();
+    final Wrapper <String> aTDDSignalErrors = new Wrapper <> ();
     final EAS4UserMessageSendResult eResult = Phase4PeppolSender.builder ()
                                                                 .httpClientFactory (aHCS)
                                                                 .documentTypeID (aTDDDocTypeID)
@@ -843,6 +879,9 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                                                                                sSeatID.substring (3)))
                                                                 .peppolAP_CAChecker (aCAChecker)
                                                                 .smpClient (aSMPClient)
+                                                                .signalMsgConsumer ( (aSignalMsg,
+                                                                                      aMessageMetadata,
+                                                                                      aState) -> aTDDSignalErrors.set (PeppolSender.getSignalMessageErrors (aSignalMsg)))
                                                                 .sendMessageAndCheckForReceipt (aTDDEx::set);
     LOGGER.info ("AE TDD send result to " + aTDDReceiver.getURIEncoded () + ": " + eResult);
     if (!eResult.isSuccess ())
@@ -850,6 +889,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                        aTDDReceiver.getURIEncoded () +
                                        ": " +
                                        eResult +
+                                       (StringHelper.hasText (aTDDSignalErrors.get ()) ? " - " + aTDDSignalErrors.get () : "") +
                                        (aTDDEx.isSet () ? " - " + aTDDEx.get ().getMessage () : ""),
                                        aTDDEx.get ());
     return eTDDType;
