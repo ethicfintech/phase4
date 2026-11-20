@@ -20,7 +20,7 @@ GATEWAY_OPTS="-Dphase4.webhook.url=http://172.17.0.1:8888/peppol/webhook -Dpeppo
 # PLAIN_HTTP_PORTS controls the old unencrypted ports (80, 8080, 8090):
 #   keep  = they stay open next to the HTTPS ports (only while the load balancer is being switched over)
 #   close = nginx stops serving 80/443, and the gateway and SMP containers listen on 127.0.0.1 only
-PLAIN_HTTP_PORTS=keep
+PLAIN_HTTP_PORTS=close
 
 # ── 1. PHP application ──────────────────────────────────────────────────────
 (
