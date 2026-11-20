@@ -15,6 +15,13 @@ GATEWAY_FALLBACK_IMAGE=phase4-peppol:latest
 #   (Peppol testbed value; replace with the FTA's production ID when MOF provides it)
 GATEWAY_OPTS="-Dphase4.webhook.url=http://172.17.0.1:8888/peppol/webhook -Dpeppol.ae.tdd.receiver=0242:000006-MLS.3001"
 
+# Traffic from the load balancer to this server is HTTPS, on three ports served by nginx:
+#   8442 = portal and API, 8443 = AS4 gateway, 8444 = SMP
+# PLAIN_HTTP_PORTS controls the old unencrypted ports (80, 8080, 8090):
+#   keep  = they stay open next to the HTTPS ports (only while the load balancer is being switched over)
+#   close = nginx stops serving 80/443, and the gateway and SMP containers listen on 127.0.0.1 only
+PLAIN_HTTP_PORTS=keep
+
 # ── 1. PHP application ──────────────────────────────────────────────────────
 (
   set -e
@@ -36,13 +43,157 @@ CRON
 chown root:root /etc/cron.d/einvoicing-queue
 chmod 644 /etc/cron.d/einvoicing-queue
 
+# ── 1c. HTTPS between the load balancer and this server ─────────────────────
+# A new private key and certificate are created on every new server; nothing is shared between
+# servers or stored in the server image. The load balancer encrypts to the server with it. It does
+# not check who issued it, so a self-signed certificate is the normal choice here; the firewall
+# allows only the load balancer to reach these ports.
+TLS_DIR=/etc/nginx/internal-tls
+TLS_SITE=/etc/nginx/sites-available/internal-tls
+LEGACY_SITES_DIR=/etc/nginx/legacy-sites
+(
+  set -e
+  mkdir -p $TLS_DIR
+  chmod 700 $TLS_DIR
+  openssl req -x509 -newkey rsa:2048 -nodes -days 397 \
+    -keyout $TLS_DIR/server.key -out $TLS_DIR/server.crt \
+    -subj "/O=Ethicfin/CN=$(hostname)" \
+    -addext "subjectAltName=DNS:einvoicing.ethicfin.com,DNS:as4.ethicfin.com,DNS:smp.ethicfin.com"
+  chmod 600 $TLS_DIR/server.key
+
+  cat > $TLS_SITE <<'NGINX'
+# Written by the server startup script (deploy/ec2-user-data.sh in the phase4 repository).
+# HTTPS entry points for the load balancer. Do not edit on the server; change the script.
+
+# Portal and API
+server {
+    listen 8442 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/internal-tls/server.crt;
+    ssl_certificate_key /etc/nginx/internal-tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:internal_tls:10m;
+
+    root /var/www/einvoicing;
+    index index.php index.html;
+
+    location ~* ^/(app|system|tests|vendor|writable)/ {
+        deny all;
+    }
+
+    location ~* ^/(composer\.(json|lock)|spark|preload\.php|.*\.(md|yaml))$ {
+        deny all;
+    }
+
+    location ~ /\. {
+        deny all;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.php?$uri&$args;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/var/run/php/php8.2-fpm.sock;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+        fastcgi_param HTTP_X_FORWARDED_PROTO $http_x_forwarded_proto;
+    }
+}
+
+# AS4 gateway. Request headers from the load balancer (Host, X-Forwarded-*) are passed on unchanged,
+# and there is no size limit and no buffering of the request, as when the load balancer reached the
+# gateway directly.
+server {
+    listen 8443 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/internal-tls/server.crt;
+    ssl_certificate_key /etc/nginx/internal-tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:internal_tls:10m;
+
+    client_max_body_size 0;
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_request_buffering off;
+        proxy_connect_timeout 10s;
+        proxy_send_timeout 300s;
+        proxy_read_timeout 300s;
+    }
+}
+
+# SMP
+server {
+    listen 8444 ssl;
+    server_name _;
+
+    ssl_certificate     /etc/nginx/internal-tls/server.crt;
+    ssl_certificate_key /etc/nginx/internal-tls/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:internal_tls:10m;
+
+    client_max_body_size 10m;
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $http_host;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 60s;
+    }
+}
+NGINX
+  ln -sf $TLS_SITE /etc/nginx/sites-enabled/internal-tls
+
+  # The webhook listener (8888) is for the gateway container on this server only
+  WEBHOOK_SITE=/etc/nginx/sites-enabled/webhook-internal
+  if [ -f $WEBHOOK_SITE ] && ! grep -q 'deny all' $WEBHOOK_SITE; then
+    sed -i 's|^\(\s*\)server_name _;|&\n\1allow 127.0.0.1;\n\1allow 172.17.0.0/16;\n\1deny all;|' $WEBHOOK_SITE
+  fi
+
+  # Old entry points on 80 and 443 (certificates from before the load balancer existed)
+  if [ "$PLAIN_HTTP_PORTS" = "close" ]; then
+    mkdir -p $LEGACY_SITES_DIR
+    for site in as4 smp.ethicfin.com einvoicing.ethicfin.com; do
+      [ -e /etc/nginx/sites-enabled/$site ] && mv /etc/nginx/sites-enabled/$site $LEGACY_SITES_DIR/
+    done
+  fi
+
+  if nginx -t; then
+    systemctl reload nginx
+  else
+    # Never leave nginx with a configuration it cannot load: put the old entry points back
+    for site in as4 smp.ethicfin.com einvoicing.ethicfin.com; do
+      [ -e $LEGACY_SITES_DIR/$site ] && mv $LEGACY_SITES_DIR/$site /etc/nginx/sites-enabled/
+    done
+    rm -f /etc/nginx/sites-enabled/internal-tls
+    nginx -t && systemctl reload nginx
+    exit 1
+  fi
+) && echo "$(date) - HTTPS entry points ready (8442 portal, 8443 AS4, 8444 SMP); plain HTTP ports: $PLAIN_HTTP_PORTS" \
+  || echo "$(date) - ERROR: HTTPS entry points could not be set up"
+
+# With PLAIN_HTTP_PORTS=close the containers are reachable only through nginx on this server
+if [ "$PLAIN_HTTP_PORTS" = "close" ]; then CONTAINER_BIND="127.0.0.1:"; else CONTAINER_BIND=""; fi
+
 # ── 2. AS4 gateway (phase4-peppol) ──────────────────────────────────────────
 run_gateway() {   # $1 = image
   docker stop phase4-peppol 2>/dev/null || true
   docker rm phase4-peppol 2>/dev/null || true
   docker run -d --name phase4-peppol --restart unless-stopped \
     --log-opt max-size=50m --log-opt max-file=5 \
-    -p 8080:8080 \
+    -p ${CONTAINER_BIND}8080:8080 \
     -v /home/ubuntu/data:/data/as4 \
     -v /home/ubuntu/certs:/certs:ro \
     -e CATALINA_OPTS="$GATEWAY_OPTS" \
@@ -81,6 +232,9 @@ else
 fi
 
 # ── 3. SMP (phoss-smp) - image and data are on the server; just make sure it runs ──
+if [ "$PLAIN_HTTP_PORTS" = "close" ]; then
+  sed -i 's|- "8090:8080"|- "127.0.0.1:8090:8080"|' /home/ubuntu/phoss-smp/docker-compose.yml
+fi
 (cd /home/ubuntu/phoss-smp && docker compose up -d) || echo "$(date) - ERROR: SMP start failed"
 
 echo "$(date) - User Data script complete!"
