@@ -214,6 +214,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
 
   private static void _sendWebhook (final byte @NonNull [] aXmlBytes,
                                     @NonNull final String sSenderURI,
+                                    @NonNull final String sReceiverURI,
                                     @NonNull final String sDocTypeURI,
                                     @NonNull final String sProcessURI,
                                     @NonNull final String sFilePath)
@@ -232,6 +233,9 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                       .timeout (Duration.ofSeconds (30))
                                                       .header ("Content-Type", "application/xml; charset=utf-8")
                                                       .header ("X-Peppol-Sender", sSenderURI)
+                                                      // The receiver from the Peppol envelope: the app uses it
+                                                      // to find the participant the document was sent to
+                                                      .header ("X-Peppol-Receiver", sReceiverURI)
                                                       .header ("X-Peppol-DocType", sDocTypeURI)
                                                       .header ("X-Peppol-Process", sProcessURI)
                                                       .header ("X-Peppol-Filepath", sFilePath)
@@ -420,6 +424,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                               {
                                 _sendWebhook (aUBLBytes,
                                               aPeppolSBD.getSenderURIEncoded (),
+                                              aPeppolSBD.getReceiverURIEncoded (),
                                               sDocTypeURI,
                                               aPeppolSBD.getProcessURIEncoded (),
                                               sFilePath);
