@@ -315,30 +315,11 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     final boolean bIsIncomingMLS = sIncomingProcess != null && sIncomingProcess.contains ("edec:mls");
     if (bIsIncomingMLS)
     {
-      // For incoming MLS (e.g. TDD.MLS), the MLS_TO-derived receiver may not be registered.
-      // Use the SBDH sender participant instead (it IS registered since we sent TDD there).
-      final String sSenderURI = aPeppolSBD.getSenderURIEncoded ();
-      final int nColonIdx = sSenderURI.indexOf ("::");
-      if (nColonIdx > 0)
-      {
-        aMLSReceiver = new SimpleParticipantIdentifier (sSenderURI.substring (0, nColonIdx),
-                                                        sSenderURI.substring (nColonIdx + 2));
-        LOGGER.info ("Received MLS: overriding MLS receiver to SBDH sender: " + aMLSReceiver.getURIEncoded ());
-      }
-      else
-        LOGGER.info ("Received MLS document - will send MLS response but skip TDD");
-
-      // Never answer an MLS that we sent ourselves: when the sender and the
-      // receiver are both served by this Access Point, each answer would be
-      // received here again and answered again, without end.
-      final String sOwnSeatDigits = APConfig.getMyPeppolSeatID ().length () > 3 ? APConfig.getMyPeppolSeatID ().substring (3) : "";
-      final String sSenderLC = sSenderURI.toLowerCase (Locale.ROOT);
-      if (sSenderLC.contains (APConfig.getMyPeppolSeatID ().toLowerCase (Locale.ROOT)) ||
-          (!sOwnSeatDigits.isEmpty () && sSenderLC.endsWith (":" + sOwnSeatDigits)))
-      {
-        LOGGER.info ("Received MLS was sent by ourselves (" + sSenderURI + ") - no MLS response is sent");
-        aMLSReceiver = null;
-      }
+      // An MLS is the answer to a document. It is never answered with another MLS: the sender of
+      // an MLS does not expect one (its MLS address is often not even registered for receiving
+      // MLS), and two Access Points answering each other's MLS would never stop.
+      LOGGER.info ("Received an MLS from " + aPeppolSBD.getSenderURIEncoded () + " - no MLS response is sent");
+      aMLSReceiver = null;
     }
 
     // Extract UBL element once (reused for MLS validation and TDD generation)
