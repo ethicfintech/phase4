@@ -70,6 +70,7 @@ import com.helger.phase4.peppol.Phase4PeppolSender.PeppolUserMessageSBDHBuilder;
 import com.helger.phase4.peppol.Phase4PeppolSendingReport;
 import com.helger.phase4.peppol.server.APConfig;
 import com.helger.phase4.peppol.server.reporting.TDDPartyNames;
+import com.helger.phase4.peppol.server.reporting.TDDValidation;
 import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.profile.peppol.Phase4PeppolHttpClientSettings;
 import com.helger.phase4.sender.EAS4UserMessageSendResult;
@@ -389,7 +390,10 @@ public final class PeppolSender
                             // is only set when the TDD got a valid AS4 receipt
                             try
                             {
-                              _sendOutboundTDD (aFinalDoc, sTDDTransportID, sTDDInstanceID);
+                              _sendOutboundTDD (aFinalDoc,
+                                                sTDDTransportID,
+                                                sTDDInstanceID,
+                                                EUAETDDDocumentTypeCode.SUBMIT);
                               TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_OUTBOUND,
                                                               sEndUserID,
                                                               aFinalDoc.getDocumentElement (),
@@ -522,12 +526,39 @@ public final class PeppolSender
                                       @NonNull final String sTransportHeaderID,
                                       @NonNull final String sTDDInstanceID) throws Exception
   {
-    _sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID);
+    _sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID, EUAETDDDocumentTypeCode.SUBMIT);
+  }
+
+  /**
+   * Build the AE Tax Data Document of the given type for a sent invoice or
+   * credit note and send it to the tax authority.
+   *
+   * @param aDoc
+   *        The UBL Invoice or CreditNote document
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice
+   * @param sTDDInstanceID
+   *        The SBDH instance identifier to use for the TDD
+   * @param eType
+   *        SUBMIT for the report, RESUBMIT for a corrected report after the
+   *        tax authority rejected it, WITHDRAW to take a report back after the
+   *        receiving Access Point rejected the invoice
+   * @throws Exception
+   *         if the TDD could not be built, is invalid, or was not accepted
+   *         with a valid AS4 receipt
+   */
+  public static void sendOutboundTDD (@NonNull final Document aDoc,
+                                      @NonNull final String sTransportHeaderID,
+                                      @NonNull final String sTDDInstanceID,
+                                      @NonNull final EUAETDDDocumentTypeCode eType) throws Exception
+  {
+    _sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID, eType);
   }
 
   private static void _sendOutboundTDD (@NonNull final Document aDoc,
                                         @NonNull final String sTransportHeaderID,
-                                        @NonNull final String sTDDInstanceID) throws Exception
+                                        @NonNull final String sTDDInstanceID,
+                                        @NonNull final EUAETDDDocumentTypeCode eType) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
     final Element aUBLElement = aDoc.getDocumentElement ();
@@ -550,7 +581,7 @@ public final class PeppolSender
     final IParticipantIdentifier aTDDReceiver = new SimpleParticipantIdentifier ("iso6523-actorid-upis", sTDDReceiverStr);
     final IParticipantIdentifier aSenderID = PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0235:" + sSeatID);
 
-    final PeppolUAETDD10Builder aTDDBuilder = new PeppolUAETDD10Builder ().documentTypeCode (EUAETDDDocumentTypeCode.SUBMIT)
+    final PeppolUAETDD10Builder aTDDBuilder = new PeppolUAETDD10Builder ().documentTypeCode (eType)
                                                                           .reporterRole (EUAETDDReporterRole.SENDER)
                                                                           .reportingParty (aSenderID)
                                                                           .receivingParty (new SimpleParticipantIdentifier ("iso6523-actorid-upis", sTDDReceiverStr))
@@ -622,7 +653,14 @@ public final class PeppolSender
     {
       throw new IllegalStateException ("Failed to serialize outbound AE TDD to bytes");
     }
-    LOGGER.info ("Sending outbound AE TDD (" + aTDDBytes.length + " bytes) to " + aTDDReceiver.getURIEncoded ());
+    // The TDD is validated before it is sent (UAE solution architecture)
+    TDDValidation.assertValid (aTDDBytes);
+    LOGGER.info ("Sending outbound AE TDD of type " +
+                 eType.getID () +
+                 " (" +
+                 aTDDBytes.length +
+                 " bytes) to " +
+                 aTDDReceiver.getURIEncoded ());
 
     final IDocumentTypeIdentifier aTDDDocTypeID = PeppolIdentifierFactory.INSTANCE.createDocumentTypeIdentifierWithDefaultScheme ("urn:peppol:schema:taxdata:1.0::TaxData##urn:peppol:taxdata:ae-1::1.0");
     final IProcessIdentifier aTDDProcessID = PeppolIdentifierFactory.INSTANCE.createProcessIdentifierWithDefaultScheme ("urn:peppol:taxreporting");

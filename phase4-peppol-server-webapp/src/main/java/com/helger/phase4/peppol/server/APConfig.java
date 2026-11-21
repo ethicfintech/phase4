@@ -142,6 +142,18 @@ public final class APConfig
     return getConfig ().getAsString ("peppol.ae.tdd.receiver", "0242:000006-testbed.3001");
   }
 
+  /**
+   * @return <code>true</code> (default) to validate every AE Tax Data Document
+   *         before it is sent. Can be switched off with
+   *         <code>peppol.ae.tdd.validate=false</code> if the validation rules
+   *         shipped with the TDD library are behind the rules of the tax
+   *         authority.
+   */
+  public static boolean isAETDDValidationEnabled ()
+  {
+    return getConfig ().getAsBoolean ("peppol.ae.tdd.validate", true);
+  }
+
   public static boolean isIncomingDumpEnabled ()
   {
     // Default false in production to avoid filling disk with bot traffic

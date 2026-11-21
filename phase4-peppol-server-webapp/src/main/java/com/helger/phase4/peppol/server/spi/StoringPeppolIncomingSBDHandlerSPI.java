@@ -78,6 +78,7 @@ import com.helger.phase4.peppol.server.api.PeppolSender;
 import com.helger.phase4.peppol.server.APConfig;
 import com.helger.phase4.peppol.server.reporting.MLSResultNotifier;
 import com.helger.phase4.peppol.server.reporting.TDDPartyNames;
+import com.helger.phase4.peppol.server.reporting.TDDValidation;
 import com.helger.phase4.peppol.server.reporting.TDDResultNotifier;
 import com.helger.phase4.peppol.server.storage.StorageHelper;
 import com.helger.phase4.peppol.servlet.IPhase4PeppolIncomingSBDHandlerSPI;
@@ -435,7 +436,8 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                 final EUAETDDDocumentTypeCode eTDDType = _sendTDD (aFinalUBLElement,
                                                                                    sTransportHeaderID,
                                                                                    bValidationFailed,
-                                                                                   sTDDInstanceID);
+                                                                                   sTDDInstanceID,
+                                                                                   false);
                                 TDDResultNotifier.notifyResult (TDDResultNotifier.DIRECTION_INBOUND,
                                                                 sReceiverURI,
                                                                 aFinalUBLElement,
@@ -737,15 +739,49 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                         final boolean bValidationFailed,
                                                         @NonNull final String sTDDInstanceID) throws Exception
   {
-    return _sendTDD (aUBLElement, sTransportHeaderID, bValidationFailed, sTDDInstanceID);
+    return _sendTDD (aUBLElement, sTransportHeaderID, bValidationFailed, sTDDInstanceID, false);
+  }
+
+  /**
+   * As {@link #sendInboundTDD(Element, String, boolean, String)}, for a
+   * corrected report.
+   *
+   * @param aUBLElement
+   *        The UBL Invoice or CreditNote root element
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice
+   * @param bValidationFailed
+   *        <code>true</code> to report the document as FAILED
+   * @param sTDDInstanceID
+   *        The SBDH instance identifier to use for the TDD
+   * @param bResubmit
+   *        <code>true</code> to send the report with the type RESUBMIT, after
+   *        the tax authority rejected the previous one
+   * @return The type of the TDD that was sent
+   * @throws Exception
+   *         if the TDD could not be built, is invalid, or was not accepted
+   *         with a valid AS4 receipt
+   */
+  @NonNull
+  public static EUAETDDDocumentTypeCode sendInboundTDD (@NonNull final Element aUBLElement,
+                                                        @NonNull final String sTransportHeaderID,
+                                                        final boolean bValidationFailed,
+                                                        @NonNull final String sTDDInstanceID,
+                                                        final boolean bResubmit) throws Exception
+  {
+    return _sendTDD (aUBLElement, sTransportHeaderID, bValidationFailed, sTDDInstanceID, bResubmit);
   }
 
   @NonNull
   private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
                                                    @NonNull final String sTransportHeaderID,
                                                    final boolean bValidationFailed,
-                                                   @NonNull final String sTDDInstanceID) throws Exception
+                                                   @NonNull final String sTDDInstanceID,
+                                                   final boolean bResubmit) throws Exception
   {
+    // The type of a report that is not FAILED
+    final EUAETDDDocumentTypeCode eReportType = bResubmit ? EUAETDDDocumentTypeCode.RESUBMIT
+                                                          : EUAETDDDocumentTypeCode.SUBMIT;
     final String sSeatID = APConfig.getMyPeppolSeatID ();
 
     final String sLocalName = aUBLElement.getLocalName ();
@@ -773,7 +809,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
                                                                                                                             sSeatID);
 
     // Build TDD
-    final PeppolUAETDD10Builder aTDDBuilder = new PeppolUAETDD10Builder ().documentTypeCode (EUAETDDDocumentTypeCode.SUBMIT)
+    final PeppolUAETDD10Builder aTDDBuilder = new PeppolUAETDD10Builder ().documentTypeCode (eReportType)
                                                                           .reporterRole (EUAETDDReporterRole.RECEIVER)
                                                                           // C4 = us (receiving AP)
                                                                           .reportingParty (aSenderID)
@@ -850,7 +886,7 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
       } // end else (aCreditNoteRef[0] != null)
     }
 
-    EUAETDDDocumentTypeCode eTDDType = EUAETDDDocumentTypeCode.SUBMIT;
+    EUAETDDDocumentTypeCode eTDDType = eReportType;
     // A document that failed validation is reported as FAILED, never as SUBMIT
     TaxDataType aTDD = bValidationFailed ? null : aTDDBuilder.build ();
     if (aTDD != null)
@@ -893,7 +929,14 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     {
       throw new IllegalStateException ("Failed to serialize AE TDD to bytes");
     }
-    LOGGER.info ("Sending AE TDD (" + aTDDBytes.length + " bytes) to " + aTDDReceiver.getURIEncoded ());
+    // The TDD is validated before it is sent (UAE solution architecture)
+    TDDValidation.assertValid (aTDDBytes);
+    LOGGER.info ("Sending AE TDD of type " +
+                 eTDDType.getID () +
+                 " (" +
+                 aTDDBytes.length +
+                 " bytes) to " +
+                 aTDDReceiver.getURIEncoded ());
 
     // Send via AS4
     final IDocumentTypeIdentifier aTDDDocTypeID = PeppolIdentifierFactory.INSTANCE.createDocumentTypeIdentifierWithDefaultScheme ("urn:peppol:schema:taxdata:1.0::TaxData##urn:peppol:taxdata:ae-1::1.0");

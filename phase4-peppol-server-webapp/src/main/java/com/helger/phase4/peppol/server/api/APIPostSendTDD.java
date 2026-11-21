@@ -39,9 +39,14 @@ import com.helger.xml.serialize.read.DOMReader;
 
 /**
  * Build the AE Tax Data Document for the posted invoice or credit note again
- * and send it to the tax authority. Called by the ASP application to retry a
- * TDD that was not delivered. The result is returned synchronously as JSON:
- * <code>{"success":true|false,"tdd_type":"S"|"F","tdd_instance_id":"...","message":"..."}</code>
+ * and send it to the tax authority. Called by the ASP application to send a
+ * TDD again that was not delivered or not answered, to resubmit a corrected
+ * one, and to withdraw a report. The last path element is the TDD type:
+ * <code>S</code> submit, <code>R</code> resubmit, <code>W</code> withdraw
+ * (outbound only), <code>F</code> failed (inbound only); the former values
+ * <code>false</code> (= S) and <code>true</code> (= F) are still accepted. The
+ * result is returned synchronously as JSON:
+ * <code>{"success":true|false,"tdd_type":"S"|"R"|"W"|"F","tdd_instance_id":"...","message":"..."}</code>
  */
 public final class APIPostSendTDD extends AbstractVerifyingAPIExecutor
 {
@@ -62,11 +67,18 @@ public final class APIPostSendTDD extends AbstractVerifyingAPIExecutor
     final String sDirection = aPathVariables.get (PARAM_DIRECTION);
     final String sTransportHeaderID = aPathVariables.get (PARAM_TRANSPORT_HEADER_ID);
     final String sTDDInstanceID = aPathVariables.get (PARAM_TDD_INSTANCE_ID);
-    final boolean bFailed = "true".equals (aPathVariables.get (PARAM_FAILED));
+    final String sTypeParam = aPathVariables.get (PARAM_FAILED);
+    final boolean bFailed = "true".equals (sTypeParam) || "F".equals (sTypeParam);
+    final boolean bResubmit = "R".equals (sTypeParam);
+    final boolean bWithdraw = "W".equals (sTypeParam);
     final byte [] aPayloadBytes = StreamHelper.getAllBytes (aRequestScope.getRequest ().getInputStream ());
 
     if (!"outbound".equals (sDirection) && !"inbound".equals (sDirection))
       throw new APIParamException ("The direction must be 'outbound' or 'inbound'");
+    if (bWithdraw && !"outbound".equals (sDirection))
+      throw new APIParamException ("A Withdraw TDD can only be sent for an outbound document");
+    if (bFailed && !"inbound".equals (sDirection))
+      throw new APIParamException ("A FAILED TDD can only be sent for an inbound document");
     if (StringHelper.isEmpty (sTransportHeaderID))
       throw new APIParamException ("API call retrieved an empty transport header ID");
     if (StringHelper.isEmpty (sTDDInstanceID))
@@ -80,7 +92,8 @@ public final class APIPostSendTDD extends AbstractVerifyingAPIExecutor
 
     LOGGER.info ("Re-sending AE TDD (" +
                  sDirection +
-                 (bFailed ? ", FAILED" : "") +
+                 ", type " +
+                 (bFailed ? "F" : bWithdraw ? "W" : bResubmit ? "R" : "S") +
                  ") for transport header '" +
                  sTransportHeaderID +
                  "' with TDD instance ID '" +
@@ -88,21 +101,25 @@ public final class APIPostSendTDD extends AbstractVerifyingAPIExecutor
                  "'");
 
     boolean bSuccess = false;
-    String sType = bFailed ? "F" : "S";
+    String sType = bFailed ? "F" : bWithdraw ? "W" : bResubmit ? "R" : "S";
     String sMessage;
     try
     {
       if ("outbound".equals (sDirection))
       {
-        PeppolSender.sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID);
+        final EUAETDDDocumentTypeCode eType = bWithdraw ? EUAETDDDocumentTypeCode.WITHDRAW
+                                                        : bResubmit ? EUAETDDDocumentTypeCode.RESUBMIT
+                                                                    : EUAETDDDocumentTypeCode.SUBMIT;
+        PeppolSender.sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID, eType);
       }
       else
       {
         final EUAETDDDocumentTypeCode eType = StoringPeppolIncomingSBDHandlerSPI.sendInboundTDD (aDoc.getDocumentElement (),
                                                                                                  sTransportHeaderID,
                                                                                                  bFailed,
-                                                                                                 sTDDInstanceID);
-        sType = eType == EUAETDDDocumentTypeCode.FAILED ? "F" : "S";
+                                                                                                 sTDDInstanceID,
+                                                                                                 bResubmit);
+        sType = eType.getID ();
       }
       bSuccess = true;
       sMessage = "TDD re-sent";
