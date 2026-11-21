@@ -1,0 +1,168 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice xmlns="urn:oasis:names:specification:ubl:schema:xsd:Invoice-2" xmlns:cac="urn:oasis:names:specification:ubl:schema:xsd:CommonAggregateComponents-2" xmlns:cbc="urn:oasis:names:specification:ubl:schema:xsd:CommonBasicComponents-2">
+<cbc:CustomizationID>urn:peppol:pint:billing-1@ae-1</cbc:CustomizationID>
+<cbc:ProfileID>urn:peppol:bis:billing</cbc:ProfileID>
+<cbc:ProfileExecutionID>00000000</cbc:ProfileExecutionID>
+<cbc:ID>INV-1001</cbc:ID>
+<cbc:UUID>a54075fc-4afc-4f34-a496-c085f545757d</cbc:UUID>
+<cbc:IssueDate>2026-11-19</cbc:IssueDate>
+<cbc:DueDate>2026-12-19</cbc:DueDate>
+<cbc:InvoiceTypeCode>380</cbc:InvoiceTypeCode>
+<cbc:DocumentCurrencyCode>AED</cbc:DocumentCurrencyCode>
+<cac:AccountingSupplierParty>
+<cac:Party>
+<cbc:EndpointID schemeID="0235">1236349812</cbc:EndpointID>
+<cac:PartyName>
+<cbc:Name>Seller Trading LLC</cbc:Name>
+</cac:PartyName>
+<cac:PostalAddress>
+<cbc:StreetName>Office 1</cbc:StreetName>
+<cbc:CityName>Dubai</cbc:CityName>
+<cbc:CountrySubentity>DXB</cbc:CountrySubentity>
+<cac:Country>
+<cbc:IdentificationCode>AE</cbc:IdentificationCode>
+</cac:Country>
+</cac:PostalAddress>
+<cac:PartyTaxScheme>
+<cbc:CompanyID>100000000000003</cbc:CompanyID>
+<cac:TaxScheme>
+<cbc:ID>VAT</cbc:ID>
+</cac:TaxScheme>
+</cac:PartyTaxScheme>
+<cac:PartyLegalEntity>
+<cbc:RegistrationName>Seller Trading LLC</cbc:RegistrationName>
+<cbc:CompanyID schemeAgencyID="TL" schemeAgencyName="Trade License issuing Authority">TL-12345</cbc:CompanyID>
+</cac:PartyLegalEntity>
+</cac:Party>
+</cac:AccountingSupplierParty>
+<cac:AccountingCustomerParty>
+<cac:Party>
+<cbc:EndpointID schemeID="0235">1234560002</cbc:EndpointID>
+<cac:PartyName>
+<cbc:Name>Buyer &amp; Sons LLC</cbc:Name>
+</cac:PartyName>
+<cac:PostalAddress>
+<cbc:StreetName>Street 1</cbc:StreetName>
+<cbc:CityName>Dubai</cbc:CityName>
+<cbc:CountrySubentity>DXB</cbc:CountrySubentity>
+<cac:Country>
+<cbc:IdentificationCode>AE</cbc:IdentificationCode>
+</cac:Country>
+</cac:PostalAddress>
+<cac:PartyTaxScheme>
+<cbc:CompanyID>100000000000003</cbc:CompanyID>
+<cac:TaxScheme>
+<cbc:ID>VAT</cbc:ID>
+</cac:TaxScheme>
+</cac:PartyTaxScheme>
+<cac:PartyLegalEntity>
+<cbc:RegistrationName>Buyer &amp; Sons LLC</cbc:RegistrationName>
+</cac:PartyLegalEntity>
+</cac:Party>
+</cac:AccountingCustomerParty>
+<cac:PaymentMeans>
+<cbc:PaymentMeansCode>30</cbc:PaymentMeansCode>
+<cac:PayeeFinancialAccount>
+<cbc:ID>AE070331234567890123456</cbc:ID>
+</cac:PayeeFinancialAccount>
+</cac:PaymentMeans>
+<cac:TaxTotal>
+<cbc:TaxAmount currencyID="AED">50.06</cbc:TaxAmount>
+<cac:TaxSubtotal>
+<cbc:TaxableAmount currencyID="AED">1001.25</cbc:TaxableAmount>
+<cbc:TaxAmount currencyID="AED">50.06</cbc:TaxAmount>
+<cac:TaxCategory>
+<cbc:ID>S</cbc:ID>
+<cbc:Percent>5</cbc:Percent>
+<cac:TaxScheme>
+<cbc:ID>VAT</cbc:ID>
+</cac:TaxScheme>
+</cac:TaxCategory>
+</cac:TaxSubtotal>
+<cac:TaxSubtotal>
+<cbc:TaxableAmount currencyID="AED">990.00</cbc:TaxableAmount>
+<cbc:TaxAmount currencyID="AED">0.00</cbc:TaxAmount>
+<cac:TaxCategory>
+<cbc:ID>Z</cbc:ID>
+<cbc:Percent>0</cbc:Percent>
+<cac:TaxScheme>
+<cbc:ID>VAT</cbc:ID>
+</cac:TaxScheme>
+</cac:TaxCategory>
+</cac:TaxSubtotal>
+</cac:TaxTotal>
+<cac:LegalMonetaryTotal>
+<cbc:LineExtensionAmount currencyID="AED">1991.25</cbc:LineExtensionAmount>
+<cbc:TaxExclusiveAmount currencyID="AED">1991.25</cbc:TaxExclusiveAmount>
+<cbc:TaxInclusiveAmount currencyID="AED">2041.31</cbc:TaxInclusiveAmount>
+<cbc:PayableAmount currencyID="AED">2041.31</cbc:PayableAmount>
+</cac:LegalMonetaryTotal>
+<cac:InvoiceLine>
+<cbc:ID>1</cbc:ID>
+<cbc:InvoicedQuantity unitCode="HUR">10</cbc:InvoicedQuantity>
+<cbc:LineExtensionAmount currencyID="AED">1001.25</cbc:LineExtensionAmount>
+<cac:Item>
+<cbc:Description>Consulting</cbc:Description>
+<cbc:Name>Consulting</cbc:Name>
+<cac:ClassifiedTaxCategory>
+<cbc:ID>S</cbc:ID>
+<cbc:Percent>5</cbc:Percent>
+<cac:TaxScheme>
+<cbc:ID>VAT</cbc:ID>
+</cac:TaxScheme>
+</cac:ClassifiedTaxCategory>
+</cac:Item>
+<cac:Price>
+<cbc:PriceAmount currencyID="AED">100.125</cbc:PriceAmount>
+<cbc:BaseQuantity unitCode="HUR">1</cbc:BaseQuantity>
+<cac:AllowanceCharge>
+<cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+<cbc:Amount currencyID="AED">0.00</cbc:Amount>
+<cbc:BaseAmount currencyID="AED">100.125</cbc:BaseAmount>
+</cac:AllowanceCharge>
+</cac:Price>
+<cac:ItemPriceExtension>
+<cbc:Amount currencyID="AED">1051.31</cbc:Amount>
+<cac:TaxTotal>
+<cbc:TaxAmount currencyID="AED">50.06</cbc:TaxAmount>
+</cac:TaxTotal>
+</cac:ItemPriceExtension>
+</cac:InvoiceLine>
+<cac:InvoiceLine>
+<cbc:ID>2</cbc:ID>
+<cbc:InvoicedQuantity unitCode="H87">2</cbc:InvoicedQuantity>
+<cbc:LineExtensionAmount currencyID="AED">990.00</cbc:LineExtensionAmount>
+<cac:AllowanceCharge>
+<cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+<cbc:AllowanceChargeReasonCode>95</cbc:AllowanceChargeReasonCode>
+<cbc:AllowanceChargeReason>Discount</cbc:AllowanceChargeReason>
+<cbc:Amount currencyID="AED">10.00</cbc:Amount>
+</cac:AllowanceCharge>
+<cac:Item>
+<cbc:Description>Export parts</cbc:Description>
+<cbc:Name>Export parts</cbc:Name>
+<cac:ClassifiedTaxCategory>
+<cbc:ID>Z</cbc:ID>
+<cbc:Percent>0</cbc:Percent>
+<cac:TaxScheme>
+<cbc:ID>VAT</cbc:ID>
+</cac:TaxScheme>
+</cac:ClassifiedTaxCategory>
+</cac:Item>
+<cac:Price>
+<cbc:PriceAmount currencyID="AED">500.00</cbc:PriceAmount>
+<cbc:BaseQuantity unitCode="H87">1</cbc:BaseQuantity>
+<cac:AllowanceCharge>
+<cbc:ChargeIndicator>false</cbc:ChargeIndicator>
+<cbc:Amount currencyID="AED">0.00</cbc:Amount>
+<cbc:BaseAmount currencyID="AED">500.00</cbc:BaseAmount>
+</cac:AllowanceCharge>
+</cac:Price>
+<cac:ItemPriceExtension>
+<cbc:Amount currencyID="AED">990.00</cbc:Amount>
+<cac:TaxTotal>
+<cbc:TaxAmount currencyID="AED">0.00</cbc:TaxAmount>
+</cac:TaxTotal>
+</cac:ItemPriceExtension>
+</cac:InvoiceLine>
+</Invoice>

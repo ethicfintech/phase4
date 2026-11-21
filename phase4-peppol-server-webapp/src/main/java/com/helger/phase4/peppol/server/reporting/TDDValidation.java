@@ -23,10 +23,10 @@ import org.jspecify.annotations.NonNull;
 import org.slf4j.Logger;
 
 import com.helger.io.resource.inmemory.ReadableResourceByteArray;
-import com.helger.peppol.uae.tdd.validate.PeppolUAETDDValidator;
 import com.helger.phase4.logging.Phase4LoggerFactory;
 import com.helger.phase4.peppol.server.APConfig;
 import com.helger.schematron.ISchematronResource;
+import com.helger.schematron.sch.SchematronResourceSCH;
 import com.helger.schematron.svrl.SVRLFailedAssert;
 import com.helger.schematron.svrl.SVRLHelper;
 import com.helger.schematron.svrl.jaxb.SchematronOutputType;
@@ -36,6 +36,12 @@ import com.helger.schematron.svrl.jaxb.SchematronOutputType;
  * architecture requires the sending and the receiving Service Provider to
  * validate the TDD they created ("Generate UUID, construct UAE TDD, validate UAE
  * TDD").
+ * <p>
+ * The rules are the OpenPeppol AE TDD Schematron 1.0.5. The file is taken
+ * unchanged from the peppol-uae-tdd library, release 1.2.0
+ * (github.com/phax/peppol-uae, Apache License 2.0). The release of that library
+ * this application can use (1.0.0) only ships the rules 1.0.3, which reject the
+ * seller and buyer names that the rules 1.0.5 require (ibr-tdd-58 to 61).
  */
 public final class TDDValidation
 {
@@ -45,7 +51,11 @@ public final class TDDValidation
    */
   public static final String ERROR_PREFIX = "TDD_INVALID";
 
+  /** Classpath location of the AE TDD Schematron rules used for the validation. */
+  public static final String SCH_AE_TDD_PATH = "external/ae-tdd/peppol-ae-tdd-1.0.5.sch";
+
   private static final Logger LOGGER = Phase4LoggerFactory.getLogger (TDDValidation.class);
+  private static final ISchematronResource AE_TDD = SchematronResourceSCH.fromClassPath (SCH_AE_TDD_PATH);
 
   private TDDValidation ()
   {}
@@ -62,8 +72,7 @@ public final class TDDValidation
     final List <String> ret = new ArrayList <> ();
     try
     {
-      final ISchematronResource aSchematron = PeppolUAETDDValidator.getSchematronUAE_TDD_10 ();
-      final SchematronOutputType aSVRL = aSchematron.applySchematronValidationToSVRL (new ReadableResourceByteArray (aTDDBytes));
+      final SchematronOutputType aSVRL = AE_TDD.applySchematronValidationToSVRL (new ReadableResourceByteArray (aTDDBytes));
       if (aSVRL == null)
       {
         ret.add ("The Tax Data Document could not be read by the validation");

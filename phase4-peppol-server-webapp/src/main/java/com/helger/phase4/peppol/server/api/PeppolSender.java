@@ -555,10 +555,23 @@ public final class PeppolSender
     _sendOutboundTDD (aDoc, sTransportHeaderID, sTDDInstanceID, eType);
   }
 
-  private static void _sendOutboundTDD (@NonNull final Document aDoc,
-                                        @NonNull final String sTransportHeaderID,
-                                        @NonNull final String sTDDInstanceID,
-                                        @NonNull final EUAETDDDocumentTypeCode eType) throws Exception
+  /**
+   * Build the AE Tax Data Document for a sent invoice or credit note. Nothing
+   * is sent.
+   *
+   * @param aDoc
+   *        The UBL Invoice or CreditNote document
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice
+   * @param eType
+   *        SUBMIT, RESUBMIT or WITHDRAW
+   * @return The serialized Tax Data Document
+   * @throws Exception
+   *         if the TDD could not be built
+   */
+  static byte @NonNull [] buildOutboundTDD (@NonNull final Document aDoc,
+                                            @NonNull final String sTransportHeaderID,
+                                            @NonNull final EUAETDDDocumentTypeCode eType) throws Exception
   {
     final String sSeatID = APConfig.getMyPeppolSeatID ();
     final Element aUBLElement = aDoc.getDocumentElement ();
@@ -653,6 +666,21 @@ public final class PeppolSender
     {
       throw new IllegalStateException ("Failed to serialize outbound AE TDD to bytes");
     }
+    return aTDDBytes;
+  }
+
+  private static void _sendOutboundTDD (@NonNull final Document aDoc,
+                                        @NonNull final String sTransportHeaderID,
+                                        @NonNull final String sTDDInstanceID,
+                                        @NonNull final EUAETDDDocumentTypeCode eType) throws Exception
+  {
+    final String sSeatID = APConfig.getMyPeppolSeatID ();
+    final IParticipantIdentifier aTDDReceiver = new SimpleParticipantIdentifier ("iso6523-actorid-upis",
+                                                                                 APConfig.getAETDDReceiver ());
+    final IParticipantIdentifier aSenderID = PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0235:" +
+                                                                                                                            sSeatID);
+
+    final byte [] aTDDBytes = buildOutboundTDD (aDoc, sTransportHeaderID, eType);
     // The TDD is validated before it is sent (UAE solution architecture)
     TDDValidation.assertValid (aTDDBytes);
     LOGGER.info ("Sending outbound AE TDD of type " +
