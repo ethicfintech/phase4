@@ -1,3 +1,5 @@
+# Gateway image for the Ethicfin Peppol access point (phase4 + AE TDD reporting).
+# Built and deployed by .github/workflows/deploy.yml on every push to master.
 # ============================================================
 # Stage 1: Build the WAR using Maven + Java 17
 # ============================================================
