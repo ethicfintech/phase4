@@ -772,12 +772,30 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     return _sendTDD (aUBLElement, sTransportHeaderID, bValidationFailed, sTDDInstanceID, bResubmit);
   }
 
-  @NonNull
-  private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
-                                                   @NonNull final String sTransportHeaderID,
-                                                   final boolean bValidationFailed,
-                                                   @NonNull final String sTDDInstanceID,
-                                                   final boolean bResubmit) throws Exception
+  /**
+   * Build the AE Tax Data Document for a received invoice or credit note.
+   * Nothing is sent.
+   *
+   * @param aUBLElement
+   *        The UBL Invoice or CreditNote root element
+   * @param sTransportHeaderID
+   *        The SBDH instance identifier of the invoice
+   * @param bValidationFailed
+   *        <code>true</code> to report the document as FAILED
+   * @param bResubmit
+   *        <code>true</code> to build a report of the type RESUBMIT
+   * @param aTypeOut
+   *        Receives, at index 0, the type of the TDD that was built. It is
+   *        FAILED also when the report could not be built from the document.
+   * @return The serialized Tax Data Document
+   * @throws Exception
+   *         if the TDD could not be built
+   */
+  static byte @NonNull [] buildInboundTDD (@NonNull final Element aUBLElement,
+                                           @NonNull final String sTransportHeaderID,
+                                           final boolean bValidationFailed,
+                                           final boolean bResubmit,
+                                           final EUAETDDDocumentTypeCode @NonNull [] aTypeOut) throws Exception
   {
     // The type of a report that is not FAILED
     final EUAETDDDocumentTypeCode eReportType = bResubmit ? EUAETDDDocumentTypeCode.RESUBMIT
@@ -929,6 +947,28 @@ public class StoringPeppolIncomingSBDHandlerSPI implements IPhase4PeppolIncoming
     {
       throw new IllegalStateException ("Failed to serialize AE TDD to bytes");
     }
+    aTypeOut[0] = eTDDType;
+    return aTDDBytes;
+  }
+
+  @NonNull
+  private static EUAETDDDocumentTypeCode _sendTDD (@NonNull final Element aUBLElement,
+                                                   @NonNull final String sTransportHeaderID,
+                                                   final boolean bValidationFailed,
+                                                   @NonNull final String sTDDInstanceID,
+                                                   final boolean bResubmit) throws Exception
+  {
+    final String sSeatID = APConfig.getMyPeppolSeatID ();
+    // C5 = Tax Authority (testbed or production FTA)
+    final IParticipantIdentifier aTDDReceiver = new SimpleParticipantIdentifier ("iso6523-actorid-upis",
+                                                                                 APConfig.getAETDDReceiver ());
+    // C4 = us (the receiving AP), scheme 0235
+    final IParticipantIdentifier aSenderID = PeppolIdentifierFactory.INSTANCE.createParticipantIdentifierWithDefaultScheme ("0235:" +
+                                                                                                                            sSeatID);
+
+    final EUAETDDDocumentTypeCode [] aTypeOut = new EUAETDDDocumentTypeCode [1];
+    final byte [] aTDDBytes = buildInboundTDD (aUBLElement, sTransportHeaderID, bValidationFailed, bResubmit, aTypeOut);
+    final EUAETDDDocumentTypeCode eTDDType = aTypeOut[0];
     // The TDD is validated before it is sent (UAE solution architecture)
     TDDValidation.assertValid (aTDDBytes);
     LOGGER.info ("Sending AE TDD of type " +
